@@ -1,0 +1,2088 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paranovell Sandbox DevTools</title>
+<!-- dev.html:真实控制台壳页面。视觉与结构基准 = console-demo.html(逐项 1:1),
+     数据全部来自 ./mock-host.js 的事件(onLog/onPending/onState),
+     本文件不解析桥协议信封、不算耗时、不配对请求响应——只做渲染与控制 API 调用。
+     已知限制:不支持两个标签页同时调试同一个 app(localStorage 最后写赢,
+     静默互踩,不抛异常)。 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg: #0F172A;
+  --panel: #1E293B;
+  --panel-2: #334155;
+  --line: #2c3a4f;
+  --text: #F8FAFC;
+  --text-2: #cbd5e1;
+  --text-3: #94a3b8;
+  --green: #22C55E;
+  --green-dim: rgba(34,197,94,.14);
+  --blue: #60a5fa;
+  --blue-dim: rgba(96,165,250,.14);
+  --amber: #fbbf24;
+  --amber-dim: rgba(251,191,36,.14);
+  --red: #f87171;
+  --red-dim: rgba(248,113,113,.14);
+  --violet: #a78bfa;
+  --violet-dim: rgba(167,139,250,.14);
+  --mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+  --sans: 'IBM Plex Sans', system-ui, sans-serif;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+  overflow: hidden;
+}
+button { font-family: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; border-radius: 4px; }
+
+/* ===== 顶栏 ===== */
+.topbar {
+  height: 52px;
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 9px; }
+.brand svg { flex: none; }
+.brand .name { font-family: var(--mono); font-weight: 700; font-size: 14px; letter-spacing: .2px; }
+.brand .tag {
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  color: var(--green); background: var(--green-dim);
+  border: 1px solid rgba(34,197,94,.35);
+  padding: 1px 7px; border-radius: 999px;
+}
+.app-url {
+  flex: 1; max-width: 460px;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 10px;
+  font-family: var(--mono); font-size: 12px; color: var(--text-2);
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.app-url svg { flex: none; opacity: .55; }
+.topbar .spacer { flex: 1; }
+.stat {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text-3);
+}
+.stat b { color: var(--text); font-weight: 600; font-family: var(--mono); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px rgba(34,197,94,.8); transition: background .18s, box-shadow .18s; }
+.dot.off { background: var(--text-3); box-shadow: none; }
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); background: var(--panel-2);
+  color: var(--text); font-size: 12.5px; font-weight: 500;
+  padding: 7px 12px; border-radius: 8px;
+  transition: background .18s, border-color .18s;
+}
+.btn:hover { background: #3d4d66; border-color: #4a5b76; }
+.btn.danger { color: var(--red); border-color: rgba(248,113,113,.4); background: var(--red-dim); }
+.btn.danger:hover { background: rgba(248,113,113,.22); }
+.btn.primary { color: #04250f; background: var(--green); border-color: var(--green); font-weight: 600; }
+.btn.primary:hover { background: #2fd66c; }
+.btn svg { flex: none; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn:disabled:hover { background: var(--panel-2); border-color: var(--line); }
+
+/* ===== 主布局 ===== */
+/* 引导页改造把 header+layout 包进了 #app-shell 做整体显隐——这层必须把 100% 高度
+   传递下去,否则 .layout 的百分比高度在 auto 高父级上解析失败,整页塌成内容高
+   (用户实测反馈的「Web 档预览高度不对」即此因)。 */
+#app-shell { height: 100%; }
+.layout { display: flex; height: calc(100% - 52px); }
+
+/* 左:应用预览 */
+.preview {
+  width: 42%; min-width: 360px;
+  display: flex; flex-direction: column;
+  border-right: 1px solid var(--line);
+}
+.preview-head {
+  height: 38px; flex: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 14px;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+  font-size: 12px; color: var(--text-3);
+}
+.preview-head .round-chip {
+  margin-left: auto;
+  font-weight: 600; color: var(--amber);
+  background: var(--amber-dim); border: 1px solid rgba(251,191,36,.35);
+  padding: 2px 8px; border-radius: 999px; font-size: 10.5px;
+}
+.preview-body { flex: 1; position: relative; background: #0b1222; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+/* Web/手机两档预览尺寸。Web = 铺满(维持现状,无 phone
+   类时 width/height 100%);手机 = 390x844 固定尺寸 + 边框感,预览栏装不下时由 JS 按
+   preview-body 实测尺寸算 transform: scale 等比缩到完整可见(见 applyPreviewScale())。 */
+.preview-viewport { width: 100%; height: 100%; transform-origin: center center; }
+.preview-viewport iframe { width: 100%; height: 100%; border: 0; display: block; }
+.preview-viewport.phone {
+  width: 390px; height: 844px; flex: none;
+  border: 10px solid var(--panel-2); border-radius: 36px;
+  box-shadow: 0 0 0 1px var(--line);
+  overflow: hidden;
+}
+
+/* 右:控制台 */
+.console { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.tabs {
+  height: 38px; flex: none;
+  display: flex; align-items: stretch;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+  padding: 0 6px;
+}
+.tab {
+  display: flex; align-items: center; gap: 7px;
+  background: none; border: none; color: var(--text-3);
+  font-size: 12.5px; font-weight: 500; padding: 0 14px;
+  border-bottom: 2px solid transparent;
+  transition: color .18s;
+}
+.tab:hover { color: var(--text-2); }
+.tab.active { color: var(--text); border-bottom-color: var(--green); }
+.tab .badge {
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  background: var(--panel-2); color: var(--text-2);
+  padding: 0 6px; border-radius: 999px; min-width: 18px; text-align: center;
+}
+.tab .badge.alert { background: var(--amber-dim); color: var(--amber); }
+.tab .badge[hidden] { display: none; }
+.pane { flex: 1; overflow-y: auto; display: none; }
+.pane.active { display: block; }
+.pane::-webkit-scrollbar { width: 10px; }
+.pane::-webkit-scrollbar-thumb { background: var(--panel-2); border-radius: 5px; }
+
+/* ===== 请求记录 ===== */
+.io-toolbar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px;
+  background: rgba(15,23,42,.92); backdrop-filter: blur(4px);
+  border-bottom: 1px solid var(--line);
+}
+.filter-chip {
+  font-family: var(--mono); font-size: 11px; font-weight: 500;
+  border: 1px solid var(--line); background: none; color: var(--text-3);
+  padding: 3px 10px; border-radius: 999px;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.filter-chip:hover { color: var(--text-2); }
+.filter-chip.on { color: var(--text); background: var(--panel-2); border-color: #4a5b76; }
+.io-toolbar .clear { margin-left: auto; }
+/* 唯一手动接管入口原本藏在"AI 返回设置"页里逐个
+   handler 切 manual,default echo 秒回,待响应卡永远不出现——请求记录工具条与简单
+   模式头部各放一处显眼开关,直接调 mock-host 新 API setManualTakeover()。 */
+.io-toolbar .takeover-toggle { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.io-row { border-bottom: 1px solid rgba(44,58,79,.55); }
+.io-row summary {
+  list-style: none; display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px; cursor: pointer; transition: background .15s;
+}
+.io-row summary::-webkit-details-marker { display: none; }
+.io-row summary:hover { background: rgba(30,41,59,.6); }
+/* io-row 本就是 <details> 可展开(完整 JSON 都在),但
+   原生展开箭头被上面这条规则隐藏、又没有替代 chevron——零可发现性。补一个会旋转的
+   chevron 图标(思路同 .editor-toggle 的旋转样式),hover 高亮与 cursor:pointer 本已存在。 */
+.row-chevron { flex: none; color: var(--text-3); display: inline-grid; place-items: center; transition: transform .18s, color .15s; }
+summary:hover .row-chevron { color: var(--text-2); }
+details[open] > summary .row-chevron { transform: rotate(180deg); }
+.io-row .time { font-family: var(--mono); font-size: 11px; color: var(--text-3); flex: none; width: 74px; }
+.dir {
+  flex: none; width: 20px; height: 20px; border-radius: 6px;
+  display: grid; place-items: center;
+}
+.dir.up { background: var(--blue-dim); color: var(--blue); }
+.dir.down { background: var(--green-dim); color: var(--green); }
+.method {
+  font-family: var(--mono); font-size: 12px; font-weight: 600;
+  padding: 2px 8px; border-radius: 6px; flex: none;
+}
+.m-pull { color: var(--violet); background: var(--violet-dim); }
+.m-submit { color: var(--blue); background: var(--blue-dim); }
+.m-save { color: var(--green); background: var(--green-dim); }
+.m-rollback { color: var(--red); background: var(--red-dim); }
+.io-row .summary-text { font-size: 12.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.io-row .lat { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--text-3); flex: none; }
+.io-row .status { flex: none; font-family: var(--mono); font-size: 11px; font-weight: 600; }
+.status.ok { color: var(--green); }
+.status.err { color: var(--red); }
+.status.pending { color: var(--amber); }
+.io-json {
+  margin: 0 14px 10px 118px;
+  background: #0b1222; border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
+  color: var(--text-2); white-space: pre; overflow-x: auto;
+}
+.io-json .k { color: var(--blue); }
+.io-json .s { color: var(--green); }
+.io-json .n { color: var(--amber); }
+.io-json .c { color: #64748b; }
+/* 缩进导轨(暗色低对比竖线,逐 2 空格一条)
+   + 括号按嵌套深度循环着色。io-json / simple-json 共用同一份规则(渲染都走 highlightJson)。 */
+.io-json .ind, .simple-json .ind {
+  display: inline-block; box-sizing: border-box; width: 2ch;
+  border-left: 1px solid rgba(255,255,255,.09);
+}
+.io-json .bd0, .simple-json .bd0 { color: #8fa6c9; }
+.io-json .bd1, .simple-json .bd1 { color: #b598c4; }
+.io-json .bd2, .simple-json .bd2 { color: #7fbfae; }
+.io-json .bd3, .simple-json .bd3 { color: #c2a179; }
+
+/* ===== 数据浏览 ===== */
+.section { padding: 14px; border-bottom: 1px solid var(--line); }
+.section h3 {
+  font-size: 12px; font-weight: 600;
+  letter-spacing: .4px; color: var(--text-3);
+  margin-bottom: 10px; display: flex; align-items: center; gap: 8px;
+}
+.kv-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+.kv-table th {
+  text-align: left; font-weight: 500; color: var(--text-3);
+  padding: 5px 10px; border-bottom: 1px solid var(--line); font-size: 11px;
+  font-family: var(--sans);
+}
+.kv-table td { padding: 6px 10px; border-bottom: 1px solid rgba(44,58,79,.5); color: var(--text-2); }
+.kv-table td.key { color: var(--text); font-weight: 500; }
+.kv-table tr:hover td { background: rgba(30,41,59,.55); }
+.kv-table .val-num { color: var(--amber); }
+.kv-table .val-str { color: var(--green); }
+.kv-table .icon-btn { opacity: 0; }
+.kv-table tr:hover .icon-btn { opacity: 1; }
+.icon-btn {
+  background: none; border: none; color: var(--text-3);
+  padding: 3px; border-radius: 5px; display: inline-grid; place-items: center;
+  transition: color .15s, opacity .15s;
+}
+.icon-btn:hover { color: var(--text); }
+.edit-input {
+  width: 100%; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 4px; color: var(--text); font-family: var(--mono);
+  font-size: 12px; padding: 2px 6px;
+}
+.card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px 14px;
+}
+.card.warn { border-color: rgba(251,191,36,.4); }
+.pending-round-card { display: flex; align-items: flex-start; gap: 12px; }
+.pending-round-card .info { flex: 1; min-width: 0; }
+.pending-round-card .title { font-weight: 600; font-size: 13px; color: var(--amber); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pending-round-card .meta { font-size: 12px; color: var(--text-3); margin-top: 4px; }
+.pill-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.mini-stat {
+  font-size: 11.5px; color: var(--text-2);
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 3px 8px;
+}
+.mini-stat b { color: var(--text); font-family: var(--mono); }
+.hint-text { font-size: 12px; color: var(--text-3); padding: 4px 0; }
+
+/* ===== 模拟返回 ===== */
+.handler-card { margin-bottom: 12px; }
+.handler-head { display: flex; align-items: center; gap: 10px; }
+.handler-name { font-family: var(--mono); font-weight: 600; font-size: 13px; }
+.handler-head .modes { margin-left: auto; display: flex; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.mode-btn {
+  border: none; background: none; color: var(--text-3);
+  font-size: 11.5px; font-weight: 500; padding: 4px 10px; border-radius: 6px;
+  transition: background .15s, color .15s;
+}
+.mode-btn:hover { color: var(--text-2); }
+.mode-btn.on { background: var(--panel-2); color: var(--text); }
+.handler-body { margin-top: 10px; }
+.handler-hint { font-size: 12px; color: var(--text-3); }
+.json-editor {
+  width: 100%; resize: none; overflow-y: auto; max-height: 40vh;
+  background: #0b1222; border: 1px solid var(--line); border-radius: 8px;
+  color: var(--text-2); font-family: var(--mono); font-size: 12px; line-height: 1.6;
+  padding: 10px 12px;
+}
+.json-editor:focus { outline: 2px solid var(--green); outline-offset: 0; }
+.json-editor.hidden { display: none; }
+.editor-bar { display: flex; align-items: center; gap: 6px; margin-top: 8px; margin-bottom: 6px; }
+.editor-bar .lbl { font-size: 11.5px; color: var(--text-3); }
+.editor-toggle {
+  background: none; border: none; color: var(--text-3);
+  padding: 2px; border-radius: 5px; display: inline-grid; place-items: center;
+  margin-left: auto; transition: color .15s;
+}
+.editor-toggle:hover { color: var(--text); }
+.editor-toggle svg { transition: transform .18s; }
+.editor-toggle.closed svg { transform: rotate(-90deg); }
+.editor-foot { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.latency { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-3); }
+.latency input[type=range] { accent-color: var(--green); width: 110px; cursor: pointer; }
+.latency .val { font-family: var(--mono); color: var(--text-2); font-size: 11.5px; }
+.editor-foot .save-mock { margin-left: auto; }
+.queue-item { display: flex; align-items: flex-start; gap: 12px; }
+.queue-item .info { flex: 1; min-width: 0; }
+.queue-item .req { font-family: var(--mono); font-size: 11.5px; color: var(--text-2); margin-top: 6px; white-space: pre; overflow-x: auto; background: #0b1222; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.pulse { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+
+/* ===== 故障模拟 ===== */
+.fault-intro { padding: 14px 14px 0; font-size: 12.5px; color: var(--text-3); }
+.fault-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; padding: 14px; }
+.fault-card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
+  transition: border-color .18s;
+}
+.fault-card:hover { border-color: #4a5b76; }
+.fault-card .head { display: flex; align-items: center; gap: 9px; font-weight: 600; font-size: 13px; }
+.fault-card .head svg { color: var(--red); flex: none; }
+.fault-card.crash .head svg { color: var(--amber); }
+.fault-card p { font-size: 12px; color: var(--text-3); flex: 1; }
+.fault-card p b { color: var(--text-2); font-weight: 500; }
+.fault-card .foot { display: flex; align-items: center; gap: 8px; }
+.switch { position: relative; width: 34px; height: 19px; flex: none; cursor: pointer; }
+.switch input { opacity: 0; width: 100%; height: 100%; position: absolute; cursor: pointer; }
+.switch .track {
+  position: absolute; inset: 0; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  transition: background .18s;
+}
+.switch .thumb {
+  position: absolute; top: 2.5px; left: 3px; width: 13px; height: 13px;
+  border-radius: 50%; background: var(--text-3); transition: transform .18s, background .18s;
+}
+.switch input:checked ~ .track { background: rgba(248,113,113,.35); border-color: rgba(248,113,113,.5); }
+.switch input:checked ~ .thumb { transform: translateX(14px); background: var(--red); }
+.switch input:focus-visible ~ .track { outline: 2px solid var(--green); outline-offset: 2px; }
+.fault-card .once { font-size: 11px; color: var(--text-3); }
+
+/* ===== 简单/完整模式 ===== */
+.mode-seg { display: flex; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 2px; flex: none; }
+.mode-seg button {
+  border: none; background: none; color: var(--text-3);
+  font-size: 12px; font-weight: 500; padding: 4px 12px; border-radius: 6px;
+  transition: background .15s, color .15s;
+}
+.mode-seg button:hover { color: var(--text-2); }
+.mode-seg button.on { background: var(--panel-2); color: var(--text); }
+body.simple .tabs { display: none; }
+body.simple .pane { display: none; }
+body.simple #pane-simple { display: block; }
+#pane-simple { display: none; }
+.simple-head { padding: 12px 16px 0; font-size: 12.5px; color: var(--text-3); }
+.takeover-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12.5px; color: var(--text-2); }
+.simple-stream { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+/* 简单模式流水行原本是不可展开的纯文本行——改为与 io-row 同构的 <details>,
+   summary 保留原有一行摘要,展开出的 JSON 复用 buildIoJsonHtml(entry)(与完整模式
+   同一份入参/返回数据),视觉密度维持原样(卡片背景/圆角/内边距不变)。 */
+.simple-row {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  overflow: hidden;
+}
+.simple-row summary {
+  list-style: none; display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; font-size: 12.5px; color: var(--text-2); cursor: pointer;
+  transition: background .15s;
+}
+.simple-row summary::-webkit-details-marker { display: none; }
+.simple-row summary:hover { background: rgba(30,41,59,.5); }
+.simple-row .time { font-family: var(--mono); font-size: 11px; color: var(--text-3); flex: none; width: 60px; }
+.simple-row .ok-ic { margin-left: auto; color: var(--green); flex: none; }
+.simple-row .fail-ic { margin-left: auto; color: var(--red); flex: none; font-size: 11.5px; font-weight: 600; }
+.simple-row .simple-json {
+  margin: 0 12px 10px; background: #0b1222; border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
+  color: var(--text-2); white-space: pre; overflow-x: auto;
+}
+.simple-json .k { color: var(--blue); }
+.simple-json .s { color: var(--green); }
+.simple-json .n { color: var(--amber); }
+.simple-json .c { color: #64748b; }
+
+/* toast */
+.toast {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%) translateY(80px);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 18px; font-size: 13px; display: flex; gap: 9px; align-items: center;
+  box-shadow: 0 8px 30px rgba(0,0,0,.5); opacity: 0;
+  transition: transform .25s, opacity .25s; z-index: 50; pointer-events: none;
+}
+.toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+.toast svg { color: var(--green); }
+
+/* ===== 入口闸(无 ?app / 跨域拒绝) ===== */
+.gate { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 100; }
+/* 作者样式的 display:flex 会覆盖 hidden 属性的 UA display:none——必须显式补回,否则隐形遮罩拦截全页点击 */
+.gate[hidden] { display: none; }
+.gate-card { max-width: 480px; width: 92%; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 28px 26px; }
+.gate-brand { display: flex; align-items: center; justify-content: center; gap: 9px; font-family: var(--mono); font-weight: 700; font-size: 15px; margin-bottom: 16px; }
+.gate-msg { font-size: 13px; color: var(--text-2); line-height: 1.6; margin-bottom: 18px; }
+.gate-form { display: flex; gap: 8px; }
+.gate-form input {
+  flex: 1; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; color: var(--text); font-family: var(--mono); font-size: 12.5px;
+}
+.gate-form input:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+.gate-hint { margin-top: 12px; font-size: 11.5px; color: var(--text-3); }
+/* 应用选择器——「最近使用」与启动器清单共用同一套列表样式 */
+.gate-section-title { font-size: 11.5px; color: var(--text-3); margin: 0 0 8px; letter-spacing: .2px; }
+.gate-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 18px; }
+.gate-list-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 9px 12px; color: var(--text); font-family: var(--mono); font-size: 12.5px;
+  cursor: pointer; transition: background .15s, border-color .15s;
+}
+.gate-list-item:hover { background: var(--panel-2); border-color: #4a5b76; }
+.gate-list-item:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+.gate-list-item .recent-tag {
+  margin-left: auto; flex: none; font-family: var(--mono); font-size: 10px; font-weight: 600;
+  color: var(--amber); background: var(--amber-dim); border: 1px solid rgba(251,191,36,.35);
+  border-radius: 999px; padding: 1px 7px;
+}
+.gate-manual-label { font-size: 11.5px; color: var(--text-3); margin-bottom: 8px; }
+/* 「浏览本地文件…」按钮复用 .btn,但 .btn 的 display:inline-flex 会覆盖 [hidden] 的
+   UA display:none(同源问题已在 .gate[hidden] 修过一次,见上文注释)——这里同样显式补回。 */
+#gate-pick-btn[hidden] { display: none; }
+</style>
+</head>
+<body>
+
+<!-- ===================== 入口闸:无 ?app 参数 / 跨域被拒时显示 ===================== -->
+<div class="gate" id="gate" hidden>
+  <div class="gate-card">
+    <div class="gate-brand">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="2.5" y="2.5" width="19" height="19" rx="4.5" stroke="#22C55E" stroke-width="1.6"/>
+        <path d="M8 15.5v-7l4.5 3.5L8 15.5z" fill="#22C55E"/>
+        <path d="M14.5 8.5h2v7h-2" stroke="#22C55E" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      Sandbox DevTools
+    </div>
+    <div class="gate-msg" id="gate-message">还没有指定要调试的应用。</div>
+
+    <!-- 浏览本地文件——调 GET /__sandbox-dev/pick 弹原生选文件对话框,选中后
+         直接装载(根内转相对路径,根外挂载为虚拟同源地址)。可见性与「选择要调试的应用」
+         清单共用同一个探测信号(GET /__sandbox-dev/apps 成功即认为启动器在场,两个接口
+         同源同生命周期)——裸静态服务下该接口 404,按钮保持不渲染。 -->
+    <button type="button" class="btn primary" id="gate-pick-btn" hidden style="width:100%;justify-content:center;margin-bottom:18px">
+      浏览本地文件…
+    </button>
+
+    <!-- 最近使用——两种形态(启动器清单 / 手填降级)都叠加显示,localStorage 全局记录,去重、上限 5 -->
+    <div id="gate-recent" hidden>
+      <div class="gate-section-title">最近使用</div>
+      <div class="gate-list" id="gate-recent-list"></div>
+    </div>
+
+    <!-- 启动器清单——GET /__sandbox-dev/apps 成功时渲染;裸静态服务(该接口 404 /
+         网络异常)时保持 hidden,优雅退回下方手填输入框,不额外报错 -->
+    <div id="gate-picker" hidden>
+      <div class="gate-section-title">选择要调试的应用</div>
+      <div class="gate-list" id="gate-apps-list"></div>
+    </div>
+
+    <div class="gate-manual-label" id="gate-manual-label" hidden>或者手动填写路径:</div>
+    <div class="gate-form">
+      <input id="gate-input" type="text" placeholder="例如 ./my-game/index.html" aria-label="应用 HTML 的相对路径或同源地址">
+      <button class="btn primary" id="gate-go">装载应用</button>
+    </div>
+    <div class="gate-hint">只能装载与本控制台同源的应用(跨域绝对地址会被拒绝)。只有静态服务根目录下的 HTML 才能被装载或列出——磁盘任意位置的文件无法支持。</div>
+  </div>
+</div>
+
+<!-- ===================== 主界面(装载成功后显示) ===================== -->
+<div id="app-shell" hidden>
+
+<header class="topbar">
+  <div class="brand">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="2.5" y="2.5" width="19" height="19" rx="4.5" stroke="#22C55E" stroke-width="1.6"/>
+      <path d="M8 15.5v-7l4.5 3.5L8 15.5z" fill="#22C55E"/>
+      <path d="M14.5 8.5h2v7h-2" stroke="#22C55E" stroke-width="1.6" stroke-linecap="round"/>
+    </svg>
+    <span class="name">Sandbox DevTools</span>
+    <span class="tag" title="当前是本地模拟环境,没有连接真实服务器">本地模拟</span>
+  </div>
+
+  <div class="mode-seg" role="group" aria-label="界面模式">
+    <button id="mode-simple" class="on" title="只看请求与响应">简单</button>
+    <button id="mode-full" title="全部功能:数据、故障演练">完整</button>
+  </div>
+
+  <!-- 语言开关——模拟宿主切语言,驱动 mock-host.js 广播 sys.languageChange
+       给被装载的应用,否则双语链路在调试台里根本试不出来(不做界面文案双语化,只驱动
+       协议层)。 -->
+  <div class="mode-seg" role="group" aria-label="模拟宿主语言" title="切换后模拟宿主推送 sys.languageChange 给应用">
+    <button id="locale-zh" class="on">中文</button>
+    <button id="locale-en">EN</button>
+  </div>
+
+  <div class="app-url" role="group" aria-label="当前装载的应用">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+    <span id="app-url-text"></span>
+  </div>
+  <button class="btn" id="btn-switch-app" title="回到应用选择器,重新挑一个要调试的应用">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3h5v5"/><path d="M8 21H3v-5"/><path d="M21 3l-7.5 7.5"/><path d="M3 21l7.5-7.5"/></svg>
+    切换应用
+  </button>
+
+  <div class="spacer"></div>
+
+  <div class="stat" title="已成功存档的数据版本号(每完成一个回合 +1)"><span>存档版本</span> <b id="stat-revision">–</b></div>
+  <div class="stat" title="已请求 AI、但应用还没存档确认的回合"><span>当前回合</span> <b id="stat-round" style="color:var(--text-3)">空闲</b></div>
+  <div class="stat"><span class="dot off" id="conn-dot" aria-hidden="true"></span> <span>应用</span> <b id="conn-text">未连接</b></div>
+
+  <button class="btn" id="btn-reload" aria-label="重载应用">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
+    重载应用
+  </button>
+  <button class="btn danger" id="btn-crash" title="立即重载应用,模拟进程被杀,观察崩溃后如何恢复">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+    模拟崩溃
+  </button>
+</header>
+
+<div class="layout">
+
+  <!-- ===================== 左:应用预览 ===================== -->
+  <section class="preview" aria-label="应用预览">
+    <div class="preview-head">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="15" rx="2"/><path d="M3 9h18"/></svg>
+      你的应用(通信方式与线上完全一致)
+      <div class="mode-seg" role="group" aria-label="预览尺寸" style="margin-left:10px">
+        <button class="on" id="preview-mode-web" title="铺满预览栏(默认)">Web</button>
+        <button id="preview-mode-phone" title="390×844 手机尺寸,预览栏装不下时自动等比缩放">手机</button>
+      </div>
+      <span class="round-chip pulse" id="round-chip" hidden title="应用发起了 AI 请求,回合要等存档确认后才算完成">回合进行中 · 等待存档</span>
+    </div>
+    <div class="preview-body" id="preview-body">
+      <div class="preview-viewport" id="preview-viewport">
+        <iframe id="app-iframe" title="沙盒应用预览"></iframe>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== 右:控制台 ===================== -->
+  <section class="console" aria-label="DevTools 控制台">
+    <nav class="tabs" role="tablist">
+      <button class="tab active" role="tab" aria-selected="true" data-pane="io">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg>
+        请求记录 <span class="badge" id="badge-io">0</span>
+      </button>
+      <button class="tab" role="tab" aria-selected="false" data-pane="data">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>
+        数据
+      </button>
+      <button class="tab" role="tab" aria-selected="false" data-pane="mock">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.2 2.2M16.2 16.2l2.2 2.2M18.4 5.6l-2.2 2.2M7.8 16.2l-2.2 2.2"/></svg>
+        AI 返回设置 <span class="badge alert" id="badge-mock" hidden></span>
+      </button>
+      <button class="tab" role="tab" aria-selected="false" data-pane="fault">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+        故障演练
+      </button>
+    </nav>
+
+    <!-- ========== Pane: 简单模式(默认)========== -->
+    <div class="pane" id="pane-simple" role="tabpanel" aria-label="简单模式">
+      <div class="simple-head">
+        <div class="takeover-row">
+          <label class="switch"><input type="checkbox" id="simple-takeover-toggle" aria-label="手动接管 AI 返回"><span class="track"></span><span class="thumb"></span></label>
+          <span>手动接管 AI 返回</span>
+        </div>
+        <div class="hint-text" id="simple-takeover-hint" hidden style="padding:0 0 8px">所有 AI 请求都会挂起,等你在待响应卡里填返回值。</div>
+        只关注两件事:<b style="color:var(--text-2)">应用发来的请求</b>,和<b style="color:var(--text-2)">你给它的返回</b>。数据浏览、故障演练等切「完整」查看。
+      </div>
+      <div class="simple-stream">
+        <div id="simple-pending"></div>
+        <div id="simple-stream-rows"></div>
+      </div>
+    </div>
+
+    <!-- ========== Pane: 请求记录 ========== -->
+    <div class="pane active" id="pane-io" role="tabpanel">
+      <div class="io-toolbar">
+        <button class="filter-chip on" data-filter="all">全部</button>
+        <button class="filter-chip" data-filter="data.submit" title="data.submit:发起 AI 回合">AI 请求</button>
+        <button class="filter-chip" data-filter="data.save" title="data.save:存档">存档</button>
+        <button class="filter-chip" data-filter="data.pull" title="data.pull:启动时读取存档">读档</button>
+        <button class="filter-chip" data-filter="data.rollback" title="data.rollback:丢弃未完成的回合">丢弃</button>
+        <div class="takeover-toggle">
+          <label class="switch"><input type="checkbox" id="io-takeover-toggle" aria-label="手动接管 AI 返回"><span class="track"></span><span class="thumb"></span></label>
+          <span>手动接管 AI 返回</span>
+        </div>
+        <button class="btn clear" id="io-clear" style="padding:4px 10px;font-size:11.5px">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+          清空
+        </button>
+      </div>
+      <div class="hint-text" id="io-takeover-hint" hidden style="padding:6px 14px 0">所有 AI 请求都会挂起,等你在待响应卡里填返回值。</div>
+      <div id="io-list"></div>
+    </div>
+
+    <!-- ========== Pane: 数据 ========== -->
+    <div class="pane" id="pane-data" role="tabpanel">
+      <div class="section">
+        <h3>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/></svg>
+          <span id="data-version-label">已存档的数据(版本 –)</span>
+          <span style="font-weight:400" title="模拟服务端,存在浏览器 localStorage,刷新页面不丢">· 存在本地,刷新不丢</span>
+          <button class="btn" id="btn-add-field" style="margin-left:auto;padding:3px 10px;font-size:11px">+ 新增字段</button>
+        </h3>
+        <table class="kv-table">
+          <thead><tr><th style="width:38%">字段</th><th>值</th><th style="width:60px"></th></tr></thead>
+          <tbody id="data-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="section" id="pending-round-section" hidden>
+        <h3>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+          没完成的回合
+        </h3>
+        <div class="card warn pending-round-card">
+          <div class="info">
+            <div class="title">
+              <span id="pending-round-title">回合 # · 处理函数</span>
+              <span class="mini-stat" style="border-color:rgba(251,191,36,.4);color:var(--amber)">等待存档确认</span>
+            </div>
+            <div class="meta">AI 已返回,但应用还没完成这回合的存档。<b style="color:var(--text-2)">点顶栏「模拟崩溃」再看这里</b>:重开后应用会自动续上这一回合。</div>
+            <div class="pill-row">
+              <span class="mini-stat">AI 返回 <b id="pending-round-meta-size">–</b></span>
+              <span class="mini-stat">发起于 <b id="pending-round-meta-time">–</b></span>
+            </div>
+          </div>
+          <button class="btn danger" id="btn-discard-round" style="flex:none" title="放弃这一回合,数据回到上次存档">丢弃此回合</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3v12M8 11l4 4 4-4"/><path d="M4 21h16"/></svg>
+          应用里还没存档的改动
+        </h3>
+        <div class="pill-row" id="buffer-pills" style="margin-top:0">
+          <span class="mini-stat" title="宿主(mock-host)看不到应用内存里未上传的改动,只有应用自己知道——协议边界如此,不是缺失功能">改动 <b>—</b></span>
+          <span class="mini-stat" title="同上:待上传的存档快照对宿主不可见,直到应用真正发起 data.save 请求">待上传存档 <b>—</b></span>
+          <span class="mini-stat" id="last-save-ago">暂无存档记录</span>
+          <span class="mini-stat" id="round-inflight-chip" style="border-color:rgba(251,191,36,.4)" hidden title="回合期间自动存档会暂停,回合完成时一并写入">回合进行中 · 自动存档暂停</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== Pane: AI 返回设置 ========== -->
+    <div class="pane" id="pane-mock" role="tabpanel">
+      <div class="section">
+        <h3>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 15h.01"/></svg>
+          等你响应的请求
+        </h3>
+        <div id="mock-queue"><div class="hint-text">暂无待响应的请求</div></div>
+      </div>
+
+      <div class="section">
+        <h3>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.2 2.2M16.2 16.2l2.2 2.2M18.4 5.6l-2.2 2.2M7.8 16.2l-2.2 2.2"/></svg>
+          每个处理函数返回什么
+        </h3>
+        <div id="mock-handlers"></div>
+        <div class="card handler-card">
+          <div class="handler-head">
+            <span class="method m-submit" style="font-size:11px">处理函数</span>
+            <span class="handler-name" style="color:var(--text-3)">其余未配置的</span>
+            <div class="modes"><span style="font-size:11.5px;color:var(--text-3);padding:4px 10px">默认原样返回(input 是什么就返回什么)</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== Pane: 故障演练 ========== -->
+    <div class="pane" id="pane-fault" role="tabpanel">
+      <div class="fault-intro">线上什么都可能发生:网络断、存档失败、进程被杀。在这里提前演练一遍,看你的应用扛不扛得住。</div>
+      <div class="fault-grid">
+        <div class="fault-card">
+          <div class="head">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
+            存档失败
+          </div>
+          <p>让下一次存档失败。<b>看什么:</b>失败后重开应用,那个回合能不能自动恢复。</p>
+          <div class="foot">
+            <label class="switch"><input type="checkbox" id="fault-save-fail" aria-label="启用存档失败演练"><span class="track"></span><span class="thumb"></span></label>
+            <span class="once">只生效一次</span>
+          </div>
+        </div>
+
+        <div class="fault-card">
+          <div class="head">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 4h9l4 6.5L12 21 3.5 10.5 7.5 4z"/><path d="M3.5 10.5h17M12 21 8.5 10.5 12 4l3.5 6.5L12 21z"/></svg>
+            两台设备同时在玩
+          </div>
+          <p>模拟别的设备改了数据:服务端以对方为准。<b>看什么:</b>你的应用被整体刷新数据后,界面还对不对。</p>
+          <div class="foot">
+            <label class="switch"><input type="checkbox" id="fault-conflict" aria-label="启用多设备冲突演练"><span class="track"></span><span class="thumb"></span></label>
+            <span class="once">只生效一次</span>
+          </div>
+        </div>
+
+        <div class="fault-card">
+          <div class="head">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+            存档太频繁
+          </div>
+          <p>让存档被服务器暂缓几秒。<b>看什么:</b>数据不丢、SDK 自动重试,你的应用完全不用管。</p>
+          <div class="foot">
+            <label class="switch"><input type="checkbox" id="fault-rate-limit" aria-label="启用存档限频演练"><span class="track"></span><span class="thumb"></span></label>
+            <span class="once">暂缓 <b style="color:var(--text-2)">3 秒</b></span>
+          </div>
+        </div>
+
+        <div class="fault-card">
+          <div class="head">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M2 12h4l2-7 4 14 2-7h4"/><path d="M20.5 12H22" opacity=".4"/></svg>
+            AI 一直不回
+          </div>
+          <p>让 AI 请求一直没有回音,直到超时。<b>看什么:</b>超时报错后,应用还能不能正常继续用。</p>
+          <div class="foot">
+            <label class="switch"><input type="checkbox" id="fault-submit-timeout" aria-label="启用 AI 超时演练"><span class="track"></span><span class="thumb"></span></label>
+            <span class="once">只生效一次</span>
+          </div>
+        </div>
+
+        <div class="fault-card crash">
+          <div class="head">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+            应用突然被杀
+          </div>
+          <p>立即重载应用,模拟手机杀后台:没存档的内存全没了。<b>看什么:</b>重开后回到哪个状态、没完成的回合怎么续上。</p>
+          <div class="foot">
+            <button class="btn danger" style="padding:5px 12px;font-size:12px" id="btn-crash2">现在就杀</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </section>
+</div>
+
+</div>
+
+<div class="toast" id="toast" role="status">
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+  <span id="toast-text">完成</span>
+</div>
+
+<script src="./mock-host.js"></script>
+<script>
+// 仅当 URL 带 fixture= 参数时才加载预置数据脚本(同步注入,保证在后续脚本执行前已加载);
+// 脚本文件不存在(如导出版)时静默跳过。
+if (new URLSearchParams(location.search).has('fixture')) document.write('<script src="./detective-fixture.js"><\/script>');
+</script>
+<script>
+// dev.html:控制台真实实现。只做渲染与调用 mock-host 的事件/控制 API——
+// 不解析桥协议信封、不算耗时、不配对请求响应,这些全部由 mock-host.js 负责。
+(function () {
+  'use strict';
+
+  // ------------------------------------------------------------------
+  // 基础工具
+  // ------------------------------------------------------------------
+  function $(sel, root) { return (root || document).querySelector(sel); }
+  function $all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function pad(n, len) {
+    n = String(n);
+    while (n.length < (len || 2)) n = '0' + n;
+    return n;
+  }
+  function fmtTimeMs(ts) {
+    var d = new Date(typeof ts === 'number' ? ts : Date.now());
+    return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) + '.' + pad(d.getMilliseconds(), 3);
+  }
+  function fmtTimeShort(ts) {
+    var d = new Date(typeof ts === 'number' ? ts : Date.now());
+    return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+
+  function byteSize(value) {
+    if (value === undefined) return 0;
+    var str;
+    try { str = JSON.stringify(value); } catch (e) { return 0; }
+    if (!str) return 0;
+    try { return new Blob([str]).size; } catch (e) { return str.length; }
+  }
+
+  // ------------------------------------------------------------------
+  // outputFormat 是给模型看的提示文本(含 JSON 样例 +
+  // 字段说明),不是结构化 JSON Schema 子对象——原 exampleFromSchema(schema→示例值的
+  // 结构翻译)相应废弃,格式示例改为"从提示文本里抠出首个平衡的 {...} 或 [...] JSON
+  // 块并 parse"。纯函数,零 DOM/无副作用。扫描时跳过字符串字面量内的括号(避免提示文本
+  // 正文里出现的花括号/方括号提前误判平衡);第一个能配平且 JSON.parse 成功的块即结果;
+  // 找不到起始括号、扫到底都没配平、或配平后 parse 失败,一律返回 null,调用方据此退回
+  // 各自的原文预填。
+  // ------------------------------------------------------------------
+  function extractExampleFromFormat(formatText) {
+    if (typeof formatText !== 'string' || !formatText) return null;
+    var startIdx = -1;
+    for (var i = 0; i < formatText.length; i++) {
+      var ch = formatText.charAt(i);
+      if (ch === '{' || ch === '[') { startIdx = i; break; }
+    }
+    if (startIdx === -1) return null;
+    var stack = [];
+    var inString = false;
+    var escape = false;
+    for (var j = startIdx; j < formatText.length; j++) {
+      var c = formatText.charAt(j);
+      if (inString) {
+        if (escape) { escape = false; }
+        else if (c === '\\') { escape = true; }
+        else if (c === '"') { inString = false; }
+        continue;
+      }
+      if (c === '"') { inString = true; continue; }
+      if (c === '{' || c === '[') { stack.push(c); continue; }
+      if (c === '}' || c === ']') {
+        stack.pop();
+        if (stack.length === 0) {
+          var candidate = formatText.slice(startIdx, j + 1);
+          try { return JSON.parse(candidate); } catch (e) { return null; }
+        }
+      }
+    }
+    return null; // 一路扫到底都没配平,视为提取失败
+  }
+
+  // outputFormat 协议级拆分为纯格式(JSON 样例字符串,
+  // 整串可直接 JSON.parse)+ outputNotes(说明文字,单独字段,不再混进 outputFormat)。
+  // 格式示例因此优先直接 JSON.parse(formatText)——命中即整串就是样例;仅当直接 parse
+  // 失败(如仍带旧协议残留的说明文字,或格式字符串本身不是合法 JSON)时才降级走上面的
+  // 平衡扫描兜底,失败则返回 null 交调用方退回各自的原文预填。
+  function parseFormatExample(formatText) {
+    if (typeof formatText !== 'string' || !formatText) return null;
+    try {
+      return JSON.parse(formatText);
+    } catch (e) {
+      return extractExampleFromFormat(formatText);
+    }
+  }
+
+  // outputFormat 样例
+  // 里 key 后缀 `?` = 可选字段(TS 惯例),真实 key 不含 `?`。预填进编辑框前必须递归剥掉
+  // 所有 key 的 `?` 后缀,让操作者填的是真实 key——嵌套对象、数组元素里的对象都要剥;
+  // 只动 key 本身,不碰值(哪怕字符串值里恰好出现 `?` 字符也不能动)。
+  function stripOptionalKeySuffix(value) {
+    if (Array.isArray(value)) {
+      return value.map(stripOptionalKeySuffix);
+    }
+    if (value !== null && typeof value === 'object') {
+      var out = {};
+      Object.keys(value).forEach(function (k) {
+        var realKey = k.charAt(k.length - 1) === '?' ? k.slice(0, -1) : k;
+        out[realKey] = stripOptionalKeySuffix(value[k]);
+      });
+      return out;
+    }
+    return value; // 基本类型(含字符串)原样返回
+  }
+
+  // 括号按嵌套深度循环着色——深度直接从
+  // indent 长度推算(每层 2 空格,与下面 highlightValue 的递归缩进规则同源,不用额外传参)。
+  var BRACKET_DEPTH_COLORS = 4;
+  function bracketSpan(ch, depth) {
+    return '<span class="bd' + (depth % BRACKET_DEPTH_COLORS) + '">' + ch + '</span>';
+  }
+
+  // 手写 JSON 高亮渲染(不用正则套转义字符串,避免转义与着色顺序互相打架)
+  function highlightValue(value, indent) {
+    indent = indent || '';
+    var depth = indent.length / 2;
+    var nextIndent = indent + '  ';
+    if (value === null) return '<span class="n">null</span>';
+    if (typeof value === 'number' || typeof value === 'boolean') return '<span class="n">' + value + '</span>';
+    if (typeof value === 'string') return '<span class="s">' + escapeHtml(JSON.stringify(value)) + '</span>';
+    if (Array.isArray(value)) {
+      if (value.length === 0) return bracketSpan('[', depth) + bracketSpan(']', depth);
+      var items = value.map(function (v) { return nextIndent + highlightValue(v, nextIndent); });
+      return bracketSpan('[', depth) + '\n' + items.join(',\n') + '\n' + indent + bracketSpan(']', depth);
+    }
+    if (typeof value === 'object') {
+      var keys = Object.keys(value);
+      if (keys.length === 0) return bracketSpan('{', depth) + bracketSpan('}', depth);
+      var lines = keys.map(function (k) {
+        return nextIndent + '<span class="k">' + escapeHtml(JSON.stringify(k)) + '</span>: ' + highlightValue(value[k], nextIndent);
+      });
+      return bracketSpan('{', depth) + '\n' + lines.join(',\n') + '\n' + indent + bracketSpan('}', depth);
+    }
+    return escapeHtml(String(value));
+  }
+  // 缩进导轨——逐行把结构性前导空格(highlightValue 递归生成,每层 2 个,不含任何
+  // 值内容,JSON 字符串内的换行早被 JSON.stringify 转成字面 \n 两个字符,不会在这里现身
+  // 拆行)替换成定宽 span + border-left,在 escapeHtml 之后的纯字符串层面操作,不解析
+  // 已生成的 HTML、不引入新的转义路径,对已转义内容零风险。
+  var INDENT_UNIT = 2;
+  function wrapIndentGuides(html) {
+    return html.split('\n').map(function (line) {
+      var m = /^( +)/.exec(line);
+      if (!m) return line;
+      var spaces = m[1];
+      var levels = Math.floor(spaces.length / INDENT_UNIT);
+      var guides = '';
+      for (var i = 0; i < levels; i++) guides += '<span class="ind"></span>';
+      var remainder = spaces.length - levels * INDENT_UNIT;
+      return guides + (remainder > 0 ? spaces.slice(0, remainder) : '') + line.slice(spaces.length);
+    }).join('\n');
+  }
+  function highlightJson(value) {
+    if (value === undefined) return '';
+    return wrapIndentGuides(highlightValue(value, ''));
+  }
+
+  function djb2(str) {
+    var hash = 5381;
+    for (var i = 0; i < str.length; i++) {
+      hash = ((hash << 5) + hash) + str.charCodeAt(i);
+      hash = hash & hash;
+    }
+    return (hash >>> 0).toString(36);
+  }
+
+  // ------------------------------------------------------------------
+  // toast
+  // ------------------------------------------------------------------
+  var toastEl = document.getElementById('toast');
+  var toastTextEl = document.getElementById('toast-text');
+  var toastTimer = null;
+  function showToast(msg) {
+    toastTextEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove('show'); }, 2200);
+  }
+
+  // ------------------------------------------------------------------
+  // 编辑框:随内容自动伸缩(上限 40vh)+ 折叠/展开(与 demo 一致)
+  // ------------------------------------------------------------------
+  function autoGrow(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight + 2, window.innerHeight * 0.4) + 'px';
+  }
+  function initEditor(el) {
+    el.addEventListener('input', function () { autoGrow(el); });
+    requestAnimationFrame(function () { if (el.offsetParent !== null) autoGrow(el); });
+  }
+  function initEditorToggle(btn) {
+    btn.addEventListener('click', function () {
+      var ta = btn.parentElement.nextElementSibling;
+      var closed = ta.classList.toggle('hidden');
+      btn.classList.toggle('closed', closed);
+      btn.setAttribute('aria-expanded', String(!closed));
+      if (!closed) autoGrow(ta);
+    });
+  }
+  function refreshEditors() {
+    $all('.json-editor').forEach(function (el) { if (el.offsetParent !== null) autoGrow(el); });
+  }
+  function chevronSvg() {
+    return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+  }
+  function sendSvg() {
+    return '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>';
+  }
+  function pencilSvg() {
+    return '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>';
+  }
+  function checkSvg() {
+    return '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+  }
+  function okIcSvg() {
+    return '<svg class="ok-ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+  }
+  // entry.direction 的实际取值是 mock-host.js 的 'app-to-host' / 'host-to-app'(不是 'down'/'up'——
+  // 曾经的实现假设过 'down' 这个字面量,与 mock-host.js 实际下发的字段值不匹配,方向图标/徽标
+  // 因此恒显示"应用发出"一侧,已按 mock-host.js 实际字段值改对。
+  function dirIconSvg(direction) {
+    if (direction === 'host-to-app') {
+      return '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>';
+    }
+    return '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
+  }
+  // ------------------------------------------------------------------
+  // tabs / 简单-完整模式切换(纯 UI,不依赖 host)
+  // ------------------------------------------------------------------
+  $all('.tab').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      $all('.tab').forEach(function (t) { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });
+      tab.classList.add('active'); tab.setAttribute('aria-selected', 'true');
+      $all('.pane').forEach(function (p) { p.classList.remove('active'); });
+      document.getElementById('pane-' + tab.dataset.pane).classList.add('active');
+      refreshEditors();
+    });
+  });
+
+  var modeSimpleBtn = document.getElementById('mode-simple');
+  var modeFullBtn = document.getElementById('mode-full');
+  function setMode(simple) {
+    document.body.classList.toggle('simple', simple);
+    modeSimpleBtn.classList.toggle('on', simple);
+    modeFullBtn.classList.toggle('on', !simple);
+    refreshEditors();
+  }
+  modeSimpleBtn.addEventListener('click', function () { setMode(true); });
+  modeFullBtn.addEventListener('click', function () { setMode(false); });
+  setMode(true);
+
+  // ------------------------------------------------------------------
+  // 语言开关——按钮本身只负责调 host.setLocale(),不在 dev.html 本地
+  // 另存一份语言状态;渲染真值来自 mock-host 的 onState 广播(latestState.locale,
+  // 见下方 handleState() 里的 renderLocaleToggle()),与 renderTakeoverToggles() 同一
+  // "UI 只读渲染引擎状态、写操作全部经 callHost()"的既有模式,不新造第二套。
+  // ------------------------------------------------------------------
+  var localeZhBtn = document.getElementById('locale-zh');
+  var localeEnBtn = document.getElementById('locale-en');
+  function renderLocaleToggle() {
+    var locale = (latestState && latestState.locale === 'en') ? 'en' : 'zh';
+    localeZhBtn.classList.toggle('on', locale === 'zh');
+    localeEnBtn.classList.toggle('on', locale === 'en');
+  }
+  localeZhBtn.addEventListener('click', function () {
+    if (callHost('setLocale', 'zh')) showToast('已切到中文:下一次 sys.languageChange 已推送给应用');
+  });
+  localeEnBtn.addEventListener('click', function () {
+    if (callHost('setLocale', 'en')) showToast('已切到 English:下一次 sys.languageChange 已推送给应用');
+  });
+
+  // ------------------------------------------------------------------
+  // 应用地址解析:无参数 → 输入框;跨域绝对 URL → 拒绝(解析后 origin 不同即拒)
+  // ------------------------------------------------------------------
+  function resolveAppUrl(raw) {
+    var resolved;
+    try {
+      resolved = new URL(raw, location.href);
+    } catch (e) {
+      return { error: '应用地址无效,无法解析:「' + raw + '」' };
+    }
+    if (resolved.origin !== location.origin) {
+      return { error: '出于安全考虑,拒绝跨域装载:「' + raw + '」解析后的来源是 ' + resolved.origin + ',与控制台所在的 ' + location.origin + ' 不同源。请改用同源的相对路径或绝对地址。' };
+    }
+    return { url: resolved.href };
+  }
+
+  // ------------------------------------------------------------------
+  // 应用选择器——启动器(dev/serve.js)在场时 GET /__sandbox-dev/apps 能拿到
+  // 清单,渲染成可点列表;裸静态服务该接口 404 / 网络异常,原样保留手填输入框(不
+  // 报错、不闪烁)。两种形态都叠加「最近使用」(localStorage 全局 key,去重、上限 5,
+  // 与清单重复的项只在「最近使用」出现一次,清单里不再重复渲染)。
+  // ------------------------------------------------------------------
+  var RECENT_APPS_KEY = 'paranovell-dev:recent-apps';
+  var RECENT_APPS_LIMIT = 5;
+
+  function loadRecentApps() {
+    try {
+      var raw = window.localStorage.getItem(RECENT_APPS_KEY);
+      var list = raw ? JSON.parse(raw) : [];
+      return Array.isArray(list) ? list.filter(function (it) { return it && typeof it.path === 'string'; }) : [];
+    } catch (e) {
+      return []; // 隐私模式等场景 localStorage 不可用/损坏 JSON,静默退化为空
+    }
+  }
+  function saveRecentApps(list) {
+    try { window.localStorage.setItem(RECENT_APPS_KEY, JSON.stringify(list)); } catch (e) { /* 持久化失败不影响当次使用 */ }
+  }
+  function appLabelFromPath(p) {
+    return String(p).replace(/^(\.\.\/|\.\/)+/, '');
+  }
+  // 「成功装载」才登记(调用方只在 iframe load 且连接灯亮时调用,见 startApp)。
+  function recordRecentApp(path) {
+    if (!path) return;
+    var list = loadRecentApps().filter(function (it) { return it.path !== path; });
+    list.unshift({ path: path, label: appLabelFromPath(path) });
+    if (list.length > RECENT_APPS_LIMIT) list = list.slice(0, RECENT_APPS_LIMIT);
+    saveRecentApps(list);
+  }
+
+  function goToApp(path) {
+    location.href = 'dev.html?app=' + encodeURIComponent(path);
+  }
+
+  function renderGateList(container, items) {
+    container.innerHTML = '';
+    items.forEach(function (item) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'gate-list-item';
+      btn.appendChild(document.createTextNode(item.label));
+      if (item.recent) {
+        var tag = document.createElement('span');
+        tag.className = 'recent-tag';
+        tag.textContent = '最近';
+        btn.appendChild(tag);
+      }
+      btn.addEventListener('click', function () { goToApp(item.path); });
+      container.appendChild(btn);
+    });
+  }
+
+  function renderGateRecent() {
+    var recent = loadRecentApps();
+    var wrap = document.getElementById('gate-recent');
+    if (!recent.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    renderGateList(document.getElementById('gate-recent-list'), recent.map(function (it) {
+      return { path: it.path, label: it.label, recent: true };
+    }));
+  }
+
+  // apps:启动器清单原始数据([{path,label}]);过滤掉已在「最近使用」出现的项,
+  // 避免同一个应用在选择器里渲染成两行。
+  function renderGatePicker(apps) {
+    var recentPaths = {};
+    loadRecentApps().forEach(function (it) { recentPaths[it.path] = true; });
+    var filtered = (apps || []).filter(function (a) { return a && !recentPaths[a.path]; });
+    var picker = document.getElementById('gate-picker');
+    var manualLabel = document.getElementById('gate-manual-label');
+    var show = filtered.length > 0;
+    picker.hidden = !show;
+    manualLabel.hidden = !show;
+    if (show) renderGateList(document.getElementById('gate-apps-list'), filtered);
+  }
+
+  function initGateChooser() {
+    renderGateRecent();
+    fetch('/__sandbox-dev/apps', { cache: 'no-store' })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error('http ' + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        renderGatePicker(data && Array.isArray(data.apps) ? data.apps : []);
+        // 「浏览本地文件…」按钮与清单共用这一次探测——启动器(dev/serve.js)在场
+        // 才露出,裸静态服务(没有本接口)不渲染,不额外发一次请求去探测 /pick。
+        document.getElementById('gate-pick-btn').hidden = false;
+      })
+      .catch(function () {
+        // 裸静态服务(没有 /__sandbox-dev/apps)或网络异常:清单区保持隐藏,
+        // 手填输入框维持原样,不弹提示、不改变现有形态。
+      });
+  }
+
+  // ------------------------------------------------------------------
+  // 「浏览本地文件…」——调原生选文件对话框接口,选中后按现有装载流程进入。
+  // ------------------------------------------------------------------
+  (function initGatePickButton() {
+    var pickBtn = document.getElementById('gate-pick-btn');
+    var IDLE_TEXT = '浏览本地文件…';
+    var WAITING_TEXT = '等待你在弹出的窗口里选择…';
+
+    function resetButton() {
+      pickBtn.disabled = false;
+      pickBtn.textContent = IDLE_TEXT;
+    }
+
+    pickBtn.addEventListener('click', function () {
+      pickBtn.disabled = true;
+      pickBtn.textContent = WAITING_TEXT;
+      fetch('/__sandbox-dev/pick', { cache: 'no-store' })
+        .then(function (resp) {
+          if (resp.status === 409) {
+            resetButton();
+            showToast('已经有一个选择窗口在弹出中,请先在桌面处理它');
+            return null;
+          }
+          if (!resp.ok) throw new Error('pick http ' + resp.status);
+          return resp.json();
+        })
+        .then(function (data) {
+          if (!data) return; // 409 已在上面处理并复位
+          if (data.canceled) {
+            resetButton();
+            return;
+          }
+          var value = data.path || data.appUrl;
+          if (!value) {
+            resetButton();
+            return;
+          }
+          goToApp(value);
+        })
+        .catch(function () {
+          resetButton();
+          showToast('浏览本地文件失败,请重试');
+        });
+    });
+  })();
+
+  function showGate(message, prefill) {
+    document.getElementById('gate').hidden = false;
+    document.getElementById('gate-message').textContent = message;
+    if (prefill) document.getElementById('gate-input').value = prefill;
+    initGateChooser();
+  }
+  document.getElementById('gate-go').addEventListener('click', function () {
+    var v = document.getElementById('gate-input').value.trim();
+    if (!v) return;
+    goToApp(v);
+  });
+  document.getElementById('gate-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') document.getElementById('gate-go').click();
+  });
+
+  // ------------------------------------------------------------------
+  // 状态容器(dev.html 自己的渲染缓存,均由 mock-host 事件驱动填充,非协议状态)
+  // ------------------------------------------------------------------
+  var host = null;
+  var logEntries = []; // 最新在前
+  var logMap = {}; // id -> entry,用于按 id 合并更新(pending → 完成)
+  var pendingQueue = []; // 来自 onPending:manual 模式下等待放行的请求
+  var latestState = null; // 来自 onState
+  var currentFilter = 'all';
+  // 数据表内联编辑态标志——非 null 时 renderDataPane() 跳过整表重建,避免后台
+  // onState(应用自己在存档、或另一个字段被改)把用户正在编辑的输入框连根替换掉。
+  var editingKey = null;
+
+  var IO_METHOD_LABEL = { 'data.pull': '读档', 'data.submit': 'AI 请求', 'data.save': '存档', 'data.rollback': '丢弃', 'sys.ping': '连接检测' };
+  var IO_METHOD_CLASS = { 'data.pull': 'm-pull', 'data.submit': 'm-submit', 'data.save': 'm-save', 'data.rollback': 'm-rollback', 'sys.ping': 'm-save' };
+  var ERROR_TEXT = { DATA_CONFLICT: '冲突', SUBMIT_FAILED: '失败', READONLY: '只读', TIMEOUT: '超时', INTERNAL: '内部错误', HANDLER_FAILED: '处理函数出错', RATE_LIMITED: '已限频' };
+
+  // 方法名查表统一走 hasOwnProperty(不用 in 或直接下标)——避免 entry.method 恰好
+  // 撞上 Object.prototype 自带的键名(如 'toString'/'constructor')时被误判命中查表。
+  function ioMethodClass(method) {
+    return Object.prototype.hasOwnProperty.call(IO_METHOD_CLASS, method) ? IO_METHOD_CLASS[method] : 'm-save';
+  }
+
+  // ------------------------------------------------------------------
+  // 控制 API 统一调用入口:host 方法缺失时不抛错、给出提示(联调期防御)
+  // ------------------------------------------------------------------
+  function callHost(method) {
+    if (!host || typeof host[method] !== 'function') {
+      showToast('控制台功能「' + method + '」暂不可用(等待 mock-host 接入)');
+      return false;
+    }
+    var args = Array.prototype.slice.call(arguments, 1);
+    try {
+      host[method].apply(host, args);
+      return true;
+    } catch (e) {
+      showToast('操作失败:' + (e && e.message ? e.message : String(e)));
+      return false;
+    }
+  }
+
+  // respond()/rejectRequest() 返回"是否命中"布尔(与 callHost() 统一 true/false
+  // 仅表示"调用是否发生"的语义不同)——这里把 host 的命中布尔原样透传给调用点,
+  // 用来区分"操作成功"与"目标请求已不存在"(已被处理过,或应用已重连清空了队列)。
+  function callHostHit(method) {
+    if (!host || typeof host[method] !== 'function') {
+      showToast('控制台功能「' + method + '」暂不可用(等待 mock-host 接入)');
+      return false;
+    }
+    var args = Array.prototype.slice.call(arguments, 1);
+    try {
+      return !!host[method].apply(host, args);
+    } catch (e) {
+      showToast('操作失败:' + (e && e.message ? e.message : String(e)));
+      return false;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // 请求记录:摘要文案与状态(仅基于 mock-host 已提供的 entry 字段生成展示文案,
+  // 不额外追踪协议状态;wire 上确无法得知的信息用诚实的通用表述,不编造 demo 的臆测细节)
+  // ------------------------------------------------------------------
+  function summarizeEntry(entry) {
+    var p = entry.params || {};
+    var r = entry.result;
+    switch (entry.method) {
+      case 'data.pull': {
+        if (entry.error) return '读取存档失败:' + (entry.error.message || entry.error.code || '未知错误');
+        if (!r) return '读取存档…';
+        var n = r.data ? Object.keys(r.data).length : 0;
+        var text = '读取存档:版本 ' + (typeof r.revision === 'number' ? r.revision : 0) + ',共 ' + n + ' 个字段';
+        if (r.pendingRound) text += ';发现一个没完成的回合(#' + r.pendingRound.round + ')';
+        return text;
+      }
+      case 'data.submit': {
+        var handler = p.model && p.model.handler;
+        var size = p.model ? byteSize(p.model.input) : 0;
+        return '发起 AI 回合:交给处理函数 ' + (handler || '?') + ',入参 ' + size + 'B';
+      }
+      case 'data.save': {
+        if (entry.error) {
+          if (entry.error.code === 'RATE_LIMITED') return '存档太频繁被暂缓(你在故障演练里开启的)';
+          if (entry.error.code === 'DATA_CONFLICT') return '存档冲突:服务端数据以别的设备为准,已整体刷新';
+          return '存档失败(' + (ERROR_TEXT[entry.error.code] || entry.error.code || '未知错误') + ')';
+        }
+        var changesLen = (p.changes && p.changes.length) || 0;
+        if (typeof p.round === 'number') {
+          return '回合 #' + p.round + ' 完成存档:写入 ' + changesLen + ' 项改动';
+        }
+        return '存档:写入 ' + changesLen + ' 项改动(不涉及 AI 回合)';
+      }
+      case 'data.rollback': {
+        if (entry.error) return '丢弃回合 #' + p.round + ' 失败';
+        return '丢弃回合 #' + p.round + ':执行失败(未注册处理函数或处理函数出错),数据回到上个存档版本';
+      }
+      case 'sys.ping':
+        return '连接检测';
+      default:
+        return entry.method;
+    }
+  }
+
+  function ioNote(entry) {
+    if (entry.method === 'data.submit' && entry.result === undefined && !entry.error) {
+      var handler = entry.params && entry.params.model && entry.params.model.handler;
+      var cfg = latestState && latestState.handlers && handler ? latestState.handlers[handler] : null;
+      if (cfg && cfg.mode === 'manual') return handler + ' 配置为「手动响应」,请到「AI 返回设置」页填写返回值放行';
+    }
+    if (entry.method === 'data.save' && entry.error && entry.error.code === 'RATE_LIMITED') {
+      return '数据没有丢:SDK 会在超时后自动把改动合并重发,你的应用不需要为此写任何代码';
+    }
+    return null;
+  }
+
+  function ioStatusInfo(entry) {
+    if (entry.late) {
+      // 该响应在超时已结算 SUBMIT_FAILED 之后才迟到——应用侧已按 id 去重丢弃,
+      // 不是"又失败了一次",用专门的措辞与颜色(amber,不是红色 err)区分。
+      return { cls: 'pending', text: '先超时,迟到已丢弃', lat: '—' };
+    }
+    if (entry.error) {
+      if (entry.error.code === 'RATE_LIMITED') {
+        var retryAfter = entry.error.payload && entry.error.payload.retryAfter;
+        return { cls: 'err', text: '已限频', lat: (typeof retryAfter === 'number' ? retryAfter + 's 后重试' : '—') };
+      }
+      return { cls: 'err', text: ERROR_TEXT[entry.error.code] || entry.error.code || '失败', lat: (typeof entry.durationMs === 'number' ? entry.durationMs + 'ms' : '—') };
+    }
+    if (entry.result !== undefined) {
+      return { cls: 'ok', text: '成功', lat: (typeof entry.durationMs === 'number' ? entry.durationMs + 'ms' : '—') };
+    }
+    return { cls: 'pending', text: entry.method === 'data.submit' ? '等你响应' : '处理中', lat: '—' };
+  }
+
+  function buildIoJsonHtml(entry) {
+    var parts = [];
+    if (entry.params !== undefined) parts.push(highlightJson(entry.params));
+    if (entry.late) {
+      // 这条响应从未送达应用(超时已先结算 SUBMIT_FAILED,迟到的成功响应被 SDK
+      // 按 id 去重丢弃)——展开区如实说明,不能当成"这次请求成功了"来展示。
+      parts.push('<span class="c">// 这条响应迟到了:应用当时已按超时收到失败结果,这条真正的返回从未送达应用(SDK 按请求 id 去重丢弃)</span>');
+      if (entry.result !== undefined) parts.push('<span class="c">// 迟到的返回内容(仅供参考)</span>\n' + highlightJson(entry.result));
+    } else if (entry.error) {
+      parts.push('<span class="c">// 错误</span>\n' + highlightJson(entry.error));
+    } else if (entry.result !== undefined) {
+      parts.push('<span class="c">// 返回</span>\n' + highlightJson(entry.result));
+    }
+    var note = ioNote(entry);
+    if (note) parts.push('<span class="c">// ' + escapeHtml(note) + '</span>');
+    return parts.join('\n');
+  }
+
+  function buildIoRow(entry) {
+    var details = document.createElement('details');
+    details.className = 'io-row';
+    details.dataset.entryId = String(entry.id); // 重建后按 id 恢复展开态用
+    var summary = document.createElement('summary');
+    var statusInfo = ioStatusInfo(entry);
+    summary.innerHTML =
+      '<span class="time">' + fmtTimeMs(entry.timestamp) + '</span>' +
+      '<span class="dir ' + (entry.direction === 'host-to-app' ? 'down' : 'up') + '" aria-label="' + (entry.direction === 'host-to-app' ? '控制台返回' : '应用发出') + '" title="' + (entry.direction === 'host-to-app' ? '控制台返回' : '应用发出') + '">' + dirIconSvg(entry.direction) + '</span>' +
+      '<span class="method ' + ioMethodClass(entry.method) + '">' + escapeHtml(entry.method) + '</span>' +
+      '<span class="summary-text">' + escapeHtml(summarizeEntry(entry)) + '</span>' +
+      '<span class="status ' + statusInfo.cls + '">' + escapeHtml(statusInfo.text) + '</span>' +
+      '<span class="lat">' + escapeHtml(statusInfo.lat) + '</span>' +
+      '<span class="row-chevron">' + chevronSvg() + '</span>';
+    details.appendChild(summary);
+    var json = document.createElement('div');
+    json.className = 'io-json';
+    json.innerHTML = buildIoJsonHtml(entry);
+    details.appendChild(json);
+    return details;
+  }
+
+  function filteredEntries() {
+    if (currentFilter === 'all') return logEntries;
+    return logEntries.filter(function (e) { return e.method === currentFilter; });
+  }
+
+  function renderIoList() {
+    var list = document.getElementById('io-list');
+    var entries = filteredEntries();
+    // 重建前记录当前展开(<details open>)的行 id——每条新日志都会走这里整表重建,
+    // <details> 节点被换掉,展开态会随节点丢失;重建后按 id 给同一条记录恢复展开。
+    var openIds = {};
+    $all('.io-row[open]', list).forEach(function (row) { if (row.dataset.entryId) openIds[row.dataset.entryId] = true; });
+    list.innerHTML = '';
+    if (entries.length === 0) {
+      list.innerHTML = '<div class="hint-text" style="padding:14px">还没有请求记录——应用发起第一次读档/AI 回合/存档后会显示在这里。</div>';
+      return;
+    }
+    entries.forEach(function (entry) {
+      var row = buildIoRow(entry);
+      if (openIds[String(entry.id)]) row.open = true;
+      list.appendChild(row);
+    });
+  }
+
+  function updateIoBadge() {
+    document.getElementById('badge-io').textContent = String(logEntries.length);
+  }
+
+  // 简单模式流水行改为与 io-row 同构的可展开行——summary 保留原有一行摘要,
+  // 展开区复用 buildIoJsonHtml(entry)(与完整模式请求记录同一份入参/返回 JSON 渲染)。
+  function buildSimpleRow(entry) {
+    var details = document.createElement('details');
+    details.className = 'simple-row';
+    details.dataset.entryId = String(entry.id); // 重建后按 id 恢复展开态用
+    var summary = document.createElement('summary');
+    var ok = !entry.error;
+    summary.innerHTML =
+      '<span class="time">' + fmtTimeShort(entry.timestamp) + '</span>' +
+      '<span class="method ' + ioMethodClass(entry.method) + '" style="font-size:11px">' + escapeHtml(IO_METHOD_LABEL[entry.method] || entry.method) + '</span>' +
+      '<span>' + escapeHtml(summarizeEntry(entry)) + '</span>' +
+      (ok ? okIcSvg() : '<span class="fail-ic">失败</span>') +
+      '<span class="row-chevron">' + chevronSvg() + '</span>';
+    details.appendChild(summary);
+    var json = document.createElement('div');
+    json.className = 'simple-json';
+    json.innerHTML = buildIoJsonHtml(entry);
+    details.appendChild(json);
+    return details;
+  }
+  function renderSimpleStream() {
+    var container = document.getElementById('simple-stream-rows');
+    var settled = logEntries.filter(function (e) { return e.result !== undefined || e.error; });
+    // 同 renderIoList——重建前记录展开行 id,重建后恢复,避免新日志到达时把简单模式
+    // 里正展开看的行收起。
+    var openIds = {};
+    $all('.simple-row[open]', container).forEach(function (row) { if (row.dataset.entryId) openIds[row.dataset.entryId] = true; });
+    container.innerHTML = '';
+    settled.slice(0, 30).forEach(function (entry) {
+      var row = buildSimpleRow(entry);
+      if (openIds[String(entry.id)]) row.open = true;
+      container.appendChild(row);
+    });
+  }
+
+  function updateLastSaveAgoDisplay() {
+    var el = document.getElementById('last-save-ago');
+    if (!el) return;
+    var lastSave = logEntries.filter(function (e) { return e.method === 'data.save' && e.result !== undefined; })[0];
+    if (!lastSave) { el.textContent = '暂无存档记录'; return; }
+    var secs = Math.max(0, Math.round((Date.now() - lastSave.timestamp) / 1000));
+    el.innerHTML = '上次存档 <b>' + secs + 's</b> 前';
+  }
+
+  // ------------------------------------------------------------------
+  // manual 队列卡片(简单模式的「待响应卡」与「AI 返回设置」页的队列共用)
+  // ------------------------------------------------------------------
+  function buildQueueCard(item) {
+    var card = document.createElement('div');
+    card.className = 'card warn queue-item';
+    var waitedS = Math.max(0, Math.round((Date.now() - (item.receivedAt || Date.now())) / 1000));
+    var inputText = (function () { try { return JSON.stringify(item.input); } catch (e) { return String(item.input); } })();
+    // outputFormat 现为纯格式(JSON 样例字符串),编辑框
+    // 预填优先直接 JSON.parse;失败时降级走 extractExampleFromFormat 平衡扫描兜底,
+    // 再失败退回 input 原文预填(保持既有行为)。
+    var formatExample = parseFormatExample(item.outputFormat);
+    if (formatExample !== null) formatExample = stripOptionalKeySuffix(formatExample); // 剥 key 的 `?` 后缀
+    var prefillPretty = formatExample !== null
+      ? (function () { try { return JSON.stringify(formatExample, null, 2); } catch (e) { return '{}'; } })()
+      : (function () { try { return JSON.stringify(item.input, null, 2); } catch (e) { return String(item.input); } })();
+    var editorLabel = formatExample !== null ? '返回值 JSON(已按应用声明的返回格式预填,随内容自动伸缩)' : '返回值 JSON(随内容自动伸缩)';
+    // outputNotes(回复说明)与格式分开呈现——次要文字,不挤占编辑区,notes 缺省
+    // (undefined/空串)时整行不渲染。
+    var notesHtml = (typeof item.outputNotes === 'string' && item.outputNotes)
+      ? '<div class="req" style="color:var(--text-3)">回复说明:' + escapeHtml(item.outputNotes) + '</div>'
+      : '';
+    card.innerHTML =
+      '<div class="info">' +
+        '<div class="title" style="font-weight:600;font-size:13px;color:var(--amber);display:flex;align-items:center;gap:8px">' +
+          '<span class="pulse" style="width:8px;height:8px;border-radius:50%;background:var(--amber);display:inline-block"></span>' +
+          escapeHtml(item.handler) + ' 的 AI 请求 · 已等待 ' + waitedS + ' 秒' +
+        '</div>' +
+        '<div class="req">应用发来的入参:' + escapeHtml(inputText) + '</div>' +
+        notesHtml +
+        '<div class="editor-bar"><span class="lbl">' + escapeHtml(editorLabel) + '</span>' +
+          '<button class="editor-toggle" aria-label="收起或展开编辑框" aria-expanded="true">' + chevronSvg() + '</button></div>' +
+        '<textarea class="json-editor" rows="1" aria-label="填写要返回给应用的 JSON">' + escapeHtml(prefillPretty) + '</textarea>' +
+      '</div>' +
+      '<div style="display:flex;flex-direction:column;gap:8px;flex:none">' +
+        '<button class="btn primary js-respond" title="把上面的 JSON 作为 AI 返回值发给应用">' + sendSvg() + ' 发送返回值</button>' +
+        '<button class="btn js-reject" title="让这次请求以失败告终,测试应用的失败处理">模拟失败</button>' +
+      '</div>';
+    var textarea = card.querySelector('.json-editor');
+    initEditor(textarea);
+    initEditorToggle(card.querySelector('.editor-toggle'));
+    card.querySelector('.js-respond').addEventListener('click', function () {
+      var parsed;
+      try { parsed = JSON.parse(textarea.value); } catch (e) { showToast('JSON 格式有误,请检查后再发送'); return; }
+      if (callHostHit('respond', item.id, parsed)) showToast('返回值已发给应用:回合继续');
+      else showToast('该请求已不存在(可能已被处理,或应用已重连)');
+    });
+    card.querySelector('.js-reject').addEventListener('click', function () {
+      if (callHostHit('rejectRequest', item.id)) showToast('已让这次 AI 请求失败');
+      else showToast('该请求已不存在(可能已被处理,或应用已重连)');
+    });
+    return card;
+  }
+
+  function renderSimplePending() {
+    var container = document.getElementById('simple-pending');
+    container.innerHTML = '';
+    pendingQueue.forEach(function (item) { container.appendChild(buildQueueCard(item)); });
+  }
+  function renderMockQueue() {
+    var container = document.getElementById('mock-queue');
+    container.innerHTML = '';
+    if (pendingQueue.length === 0) {
+      container.innerHTML = '<div class="hint-text">暂无待响应的请求</div>';
+      return;
+    }
+    pendingQueue.forEach(function (item) { container.appendChild(buildQueueCard(item)); });
+  }
+  function updateMockBadge() {
+    var badge = document.getElementById('badge-mock');
+    if (pendingQueue.length > 0) {
+      badge.hidden = false;
+      badge.textContent = pendingQueue.length + ' 待处理';
+    } else {
+      badge.hidden = true;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // 数据页
+  // ------------------------------------------------------------------
+  function buildDataRow(key, value) {
+    var tr = document.createElement('tr');
+    var isNum = typeof value === 'number';
+    var display = isNum ? String(value) : JSON.stringify(value);
+    tr.innerHTML =
+      '<td class="key">' + escapeHtml(key) + '</td>' +
+      '<td class="' + (isNum ? 'val-num' : 'val-str') + '">' + escapeHtml(display) + '</td>' +
+      '<td><button class="icon-btn js-edit" aria-label="编辑 ' + escapeHtml(key) + '">' + pencilSvg() + '</button></td>';
+    tr.querySelector('.js-edit').addEventListener('click', function () { startInlineEdit(tr, key, value); });
+    return tr;
+  }
+
+  function startInlineEdit(tr, key, value) {
+    editingKey = key; // 进入编辑态——renderDataPane() 从此跳过整表重建,直到 finish()
+    var valTd = tr.children[1];
+    var raw = typeof value === 'number' ? String(value) : JSON.stringify(value);
+    valTd.innerHTML = '<input type="text" class="edit-input" value="' + escapeHtml(raw) + '">';
+    var input = valTd.querySelector('input');
+    input.focus(); input.select();
+    // 防重入——commit()/cancel() 触发的 renderDataPane() 会用 innerHTML 清空
+    // tbody(把这个还持有焦点的 input 从 DOM 里摘掉),浏览器会同步派发一次 blur;
+    // 不加这道闸,那次派生的 blur 会再调用一次 cancel()/renderDataPane(),在重建过程
+    // 中重入,产生重复行或状态错乱。settled 一旦置位,后续同一轮编辑的 blur 一律忽略。
+    var settled = false;
+    function finish() {
+      if (settled) return false;
+      settled = true;
+      editingKey = null;
+      return true;
+    }
+    function commit() {
+      if (!finish()) return;
+      var text = input.value;
+      var parsed;
+      try { parsed = JSON.parse(text); } catch (e) { parsed = text; } // 非法 JSON 时按原始字符串处理
+      if (callHost('editData', key, parsed)) showToast('已更新字段 ' + key);
+      else renderDataPane(); // host 调用失败(如未接入):兜底刷新一次,避免卡在编辑态
+    }
+    function cancel() {
+      if (!finish()) return;
+      renderDataPane();
+    }
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') commit();
+      else if (e.key === 'Escape') cancel();
+    });
+    input.addEventListener('blur', function () { cancel(); });
+  }
+
+  function addFieldRow() {
+    var tbody = document.getElementById('data-tbody');
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td><input type="text" class="edit-input" placeholder="字段名"></td>' +
+      '<td><input type="text" class="edit-input" placeholder="JSON 值,如 123 或 &quot;text&quot;"></td>' +
+      '<td><button class="icon-btn js-confirm-add" aria-label="确认新增">' + checkSvg() + '</button></td>';
+    tbody.insertBefore(tr, tbody.firstChild);
+    var keyInput = tr.children[0].querySelector('input');
+    var valInput = tr.children[1].querySelector('input');
+    keyInput.focus();
+    function confirmAdd() {
+      var key = keyInput.value.trim();
+      if (!key) { showToast('字段名不能为空'); return; }
+      var raw = valInput.value;
+      var parsed;
+      try { parsed = JSON.parse(raw); } catch (e) { parsed = raw; }
+      if (callHost('editData', key, parsed)) { showToast('已新增字段 ' + key); renderDataPane(); }
+    }
+    tr.querySelector('.js-confirm-add').addEventListener('click', confirmAdd);
+    valInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') confirmAdd(); });
+  }
+  document.getElementById('btn-add-field').addEventListener('click', addFieldRow);
+  document.getElementById('btn-discard-round').addEventListener('click', function () {
+    if (callHost('discardRound')) showToast('已丢弃这一回合,数据回到上个存档');
+  });
+
+  function renderDataPane() {
+    var s = latestState || {};
+    // 编辑态中跳过整表重建——用户正在改一个字段时,不能让后台 onState(应用自己
+    // 存档、其它字段变化)把这行输入框连根替换掉;版本号/回合卡片等其余信息仍照常刷新。
+    if (!editingKey) {
+      var tbody = document.getElementById('data-tbody');
+      tbody.innerHTML = '';
+      var data = s.data || {};
+      Object.keys(data).forEach(function (key) { tbody.appendChild(buildDataRow(key, data[key])); });
+    }
+    document.getElementById('data-version-label').textContent = '已存档的数据(版本 ' + (typeof s.revision === 'number' ? s.revision : '–') + ')';
+
+    var pendingSection = document.getElementById('pending-round-section');
+    if (s.pendingRound) {
+      pendingSection.hidden = false;
+      var pr = s.pendingRound;
+      document.getElementById('pending-round-title').textContent = '回合 #' + pr.round + ' · 处理函数 ' + pr.handler;
+      document.getElementById('pending-round-meta-size').textContent = byteSize(pr.output) + 'B';
+      document.getElementById('pending-round-meta-time').textContent = pr.startedAt ? fmtTimeShort(pr.startedAt) : '—';
+    } else {
+      pendingSection.hidden = true;
+    }
+
+    document.getElementById('round-inflight-chip').hidden = !s.pendingRound;
+    updateLastSaveAgoDisplay();
+  }
+
+  // ------------------------------------------------------------------
+  // AI 返回设置:每个处理函数的模式(echo/fixed/manual)
+  // ------------------------------------------------------------------
+  function renderHandlerBody(body, name, mode, cfg) {
+    if (mode === 'manual') {
+      body.innerHTML = '<div class="handler-hint">手动响应:应用每次请求 AI 都会先挂起,你在上方「等你响应的请求」里填好返回值再放行。适合逐步调试每个回合。</div>';
+      return;
+    }
+    if (mode !== 'fixed') {
+      body.innerHTML = '';
+      return;
+    }
+    var fixedJson = cfg.fixedJson !== undefined ? cfg.fixedJson : {};
+    var delayMs = cfg.delayMs || 0;
+    // 「填入格式示例」取的是该 handler 最近一轮请求带来的
+    // outputFormat(lastFormat,给模型看的纯格式)——格式示例的唯一来源是应用 submit
+    // 随带的 outputFormat,不是静态配置。还没收到过请求(lastFormat 缺失)时按钮禁用
+    // 并提示原因;有 lastFormat 但直接 parse/平衡扫描都提取不出 JSON 块时,点击后退回
+    // 填入 lastFormat 原文(见下方 click 处理)。lastNotes(回复说明)与格式分开
+    // 呈现,次要文字,不挤占编辑区,缺省时不渲染。
+    var hasLastFormat = typeof cfg.lastFormat === 'string' && cfg.lastFormat.length > 0;
+    var hasLastNotes = typeof cfg.lastNotes === 'string' && cfg.lastNotes.length > 0;
+    var lastNotesHtml = hasLastNotes
+      ? '<div class="handler-hint" style="color:var(--text-3)">回复说明:' + escapeHtml(cfg.lastNotes) + '</div>'
+      : '';
+    body.innerHTML =
+      lastNotesHtml +
+      '<div class="editor-bar" style="margin-top:0"><span class="lbl">固定返回的 JSON(随内容自动伸缩)</span>' +
+        '<button class="btn fill-example" style="padding:3px 10px;font-size:11px"' + (hasLastFormat ? '' : ' disabled') + ' title="' +
+          (hasLastFormat ? '按「' + escapeHtml(name) + '」最近一次请求声明的返回格式生成示例,填入下方编辑框(会覆盖当前内容)' : '该处理函数还没有收到过请求,无法得知期望格式') +
+          '">填入格式示例</button>' +
+        '<button class="editor-toggle" aria-label="收起或展开编辑框" aria-expanded="true">' + chevronSvg() + '</button></div>' +
+      '<textarea class="json-editor" rows="1" aria-label="' + escapeHtml(name) + ' 每次返回的 JSON">' + escapeHtml(JSON.stringify(fixedJson, null, 2)) + '</textarea>' +
+      '<div class="editor-foot">' +
+        '<label class="latency" title="真实 AI 需要思考时间,这里模拟等待的秒数">模拟 AI 耗时' +
+          '<input type="range" min="0" max="8000" step="250" value="' + delayMs + '" aria-label="模拟 AI 耗时毫秒数">' +
+          '<span class="val">' + delayMs + 'ms</span>' +
+        '</label>' +
+        '<button class="btn save-mock" style="padding:5px 12px;font-size:12px">保存设置</button>' +
+      '</div>';
+    var textarea = body.querySelector('.json-editor');
+    initEditor(textarea);
+    initEditorToggle(body.querySelector('.editor-toggle'));
+    var range = body.querySelector('input[type=range]');
+    var val = body.querySelector('.val');
+    range.addEventListener('input', function () { val.textContent = range.value + 'ms'; });
+    var fillExampleBtn = body.querySelector('.fill-example');
+    if (hasLastFormat) {
+      fillExampleBtn.addEventListener('click', function () {
+        // 开发工具惯例:覆盖前不需确认(与既有编辑器交互一致)。直接 JSON.parse 失败时
+        // 降级走平衡扫描,再失败退回填入 lastFormat 原文,而不是静默什么都不做。
+        var example = parseFormatExample(cfg.lastFormat);
+        if (example !== null) example = stripOptionalKeySuffix(example); // 剥 key 的 `?` 后缀
+        textarea.value = example !== null ? JSON.stringify(example, null, 2) : cfg.lastFormat;
+        autoGrow(textarea);
+      });
+    }
+    body.querySelector('.save-mock').addEventListener('click', function () {
+      var parsed;
+      try { parsed = JSON.parse(textarea.value); } catch (e) { showToast('JSON 格式有误,请检查后再保存'); return; }
+      if (callHost('setMockMode', name, 'fixed', { json: parsed, delayMs: Number(range.value) })) {
+        showToast('已保存「' + name + '」的固定返回设置');
+      }
+    });
+  }
+
+  function buildHandlerCard(name, cfg) {
+    var mode = cfg.mode || 'echo';
+    var card = document.createElement('div');
+    card.className = 'card handler-card';
+    card.innerHTML =
+      '<div class="handler-head">' +
+        '<span class="method m-submit" style="font-size:11px">处理函数</span>' +
+        '<span class="handler-name">' + escapeHtml(name) + '</span>' +
+        '<div class="modes" role="group" aria-label="' + escapeHtml(name) + ' 返回方式">' +
+          '<button class="mode-btn' + (mode === 'echo' ? ' on' : '') + '" data-mode="echo" title="把应用发来的 input 原样返回">原样返回</button>' +
+          '<button class="mode-btn' + (mode === 'fixed' ? ' on' : '') + '" data-mode="fixed" title="每次都返回你在下面写好的 JSON">固定返回</button>' +
+          '<button class="mode-btn' + (mode === 'manual' ? ' on' : '') + '" data-mode="manual" title="每次请求都先挂起,由你现场填写返回值">手动响应</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="handler-body"></div>';
+    var body = card.querySelector('.handler-body');
+    renderHandlerBody(body, name, mode, cfg);
+    card.querySelectorAll('.mode-btn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var newMode = btn.dataset.mode;
+        var opts = newMode === 'fixed' ? { json: cfg.fixedJson !== undefined ? cfg.fixedJson : {}, delayMs: cfg.delayMs || 0 } : undefined;
+        if (callHost('setMockMode', name, newMode, opts)) {
+          showToast('已切换「' + name + '」为「' + btn.textContent + '」');
+        }
+      });
+    });
+    return card;
+  }
+
+  function renderMockHandlers() {
+    var container = document.getElementById('mock-handlers');
+    // 重建前检测是否有编辑控件正在编辑中(焦点落在 #mock-handlers 内的「固定返回」
+    // JSON 编辑框/耗时滑杆)——回合在途等场景下 onState 会频繁触发 renderMockHandlers,
+    // 若无差别地整体 innerHTML 重建,会把还没保存的改动连根冲掉。参照数据表 editingKey
+    // 的既有模式:编辑态中跳过本次重建,直到失焦(单纯点击按钮不算编辑,不拦)。
+    var active = document.activeElement;
+    var isEditing = active && container.contains(active) &&
+      (active.tagName === 'TEXTAREA' || (active.tagName === 'INPUT' && (active.type === 'text' || active.type === 'range')));
+    if (isEditing) return;
+    var handlers = (latestState && latestState.handlers) || {};
+    container.innerHTML = '';
+    Object.keys(handlers).forEach(function (name) { container.appendChild(buildHandlerCard(name, handlers[name] || {})); });
+  }
+
+  // ------------------------------------------------------------------
+  // 故障演练
+  // ------------------------------------------------------------------
+  function setSwitchChecked(id, checked) {
+    var el = document.getElementById(id);
+    if (el && el.checked !== !!checked) el.checked = !!checked;
+  }
+  function renderFaultSwitches() {
+    var faults = (latestState && latestState.faults) || {};
+    setSwitchChecked('fault-save-fail', faults['save-fail'] && faults['save-fail'].enabled);
+    setSwitchChecked('fault-conflict', faults['conflict'] && faults['conflict'].enabled);
+    setSwitchChecked('fault-rate-limit', faults['rate-limit'] && faults['rate-limit'].enabled);
+    setSwitchChecked('fault-submit-timeout', faults['submit-timeout'] && faults['submit-timeout'].enabled);
+  }
+  function bindOnceFault(inputId, kind) {
+    document.getElementById(inputId).addEventListener('change', function (e) {
+      if (e.target.checked) {
+        if (callHost('setFault', kind, { once: true })) showToast('已启用故障演练:下一次请求生效');
+      } else {
+        callHost('setFault', kind, { enabled: false });
+      }
+    });
+  }
+  function bindStandingFault(inputId, kind, extraOpts) {
+    document.getElementById(inputId).addEventListener('change', function (e) {
+      var payload = { enabled: e.target.checked };
+      for (var k in extraOpts) if (Object.prototype.hasOwnProperty.call(extraOpts, k)) payload[k] = extraOpts[k];
+      if (callHost('setFault', kind, payload)) {
+        showToast(e.target.checked ? '已启用故障演练' : '已关闭故障演练');
+      }
+    });
+  }
+  bindOnceFault('fault-save-fail', 'save-fail');
+  bindOnceFault('fault-conflict', 'conflict');
+  bindStandingFault('fault-rate-limit', 'rate-limit', { retryAfter: 3 });
+  bindOnceFault('fault-submit-timeout', 'submit-timeout');
+  document.getElementById('btn-crash2').addEventListener('click', function () { callHost('crash'); });
+
+  // ------------------------------------------------------------------
+  // 手动接管 AI 返回——简单模式头部与请求记录工具条各一个开关,状态同步渲染自
+  // latestState.manualTakeover;直接调 mock-host 新 API setManualTakeover(),不在
+  // dev.html 本地维护额外状态。
+  // ------------------------------------------------------------------
+  function renderTakeoverToggles() {
+    var enabled = !!(latestState && latestState.manualTakeover);
+    setSwitchChecked('simple-takeover-toggle', enabled);
+    setSwitchChecked('io-takeover-toggle', enabled);
+    document.getElementById('simple-takeover-hint').hidden = !enabled;
+    document.getElementById('io-takeover-hint').hidden = !enabled;
+  }
+  function bindTakeoverToggle(inputId) {
+    document.getElementById(inputId).addEventListener('change', function (e) {
+      if (callHost('setManualTakeover', e.target.checked)) {
+        showToast(e.target.checked ? '已开启手动接管:后续 AI 请求都会挂起,等你填返回值' : '已关闭手动接管:各处理函数恢复原有返回方式');
+      }
+    });
+  }
+  bindTakeoverToggle('simple-takeover-toggle');
+  bindTakeoverToggle('io-takeover-toggle');
+
+  // ------------------------------------------------------------------
+  // 顶栏状态
+  // ------------------------------------------------------------------
+  function renderTopbarStats() {
+    var s = latestState || {};
+    document.getElementById('stat-revision').textContent = (typeof s.revision === 'number') ? String(s.revision) : '–';
+    var roundEl = document.getElementById('stat-round');
+    if (s.pendingRound) {
+      roundEl.textContent = '#' + s.pendingRound.round + ' 进行中';
+      roundEl.style.color = 'var(--amber)';
+    } else {
+      roundEl.textContent = '空闲';
+      roundEl.style.color = 'var(--text-3)';
+    }
+    var dot = document.getElementById('conn-dot');
+    var connText = document.getElementById('conn-text');
+    var connected = (typeof s.connected === 'boolean') ? s.connected : true; // 兜底:收到过 onState 即视为已连接
+    dot.classList.toggle('off', !connected);
+    connText.textContent = connected ? '已连接' : '未连接';
+
+    document.getElementById('round-chip').hidden = !s.pendingRound;
+  }
+
+  // ------------------------------------------------------------------
+  // 请求记录 toolbar:过滤 chips(真过滤)+ 清空(仅清空本地展示缓存)
+  // ------------------------------------------------------------------
+  $all('.filter-chip').forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      $all('.filter-chip').forEach(function (c) { c.classList.remove('on'); });
+      chip.classList.add('on');
+      currentFilter = chip.dataset.filter || 'all';
+      renderIoList();
+    });
+  });
+  document.getElementById('io-clear').addEventListener('click', function () {
+    logEntries = []; logMap = {};
+    renderIoList(); renderSimpleStream(); updateIoBadge();
+  });
+
+  // ------------------------------------------------------------------
+  // mock-host 事件处理
+  // ------------------------------------------------------------------
+  function handleLog(entry) {
+    if (!entry || entry.id === undefined || entry.id === null) return;
+    var key = String(entry.id);
+    if (!logMap[key]) {
+      logMap[key] = entry;
+      logEntries.unshift(entry);
+    } else {
+      var old = logMap[key];
+      // submit-timeout 故障下,同一 id 会先结算一条 error(SUBMIT_FAILED),稍后
+      // "迟到"的成功响应(late:true,或有 result 无 error)再到达——此时旧的 error 字段
+      // 必须清掉,否则合并后 error/result 同时存在,状态与展开区会自相矛盾。
+      var clearsOldError = entry.late === true
+        || (Object.prototype.hasOwnProperty.call(entry, 'result') && !Object.prototype.hasOwnProperty.call(entry, 'error'));
+      if (clearsOldError) delete old.error;
+      for (var k in entry) { if (Object.prototype.hasOwnProperty.call(entry, k)) old[k] = entry[k]; }
+    }
+    renderIoList();
+    renderSimpleStream();
+    updateIoBadge();
+    updateLastSaveAgoDisplay();
+  }
+  function handlePending(list) {
+    pendingQueue = list || [];
+    renderMockQueue();
+    renderSimplePending();
+    updateMockBadge();
+  }
+  function handleState(state) {
+    latestState = state || {};
+    renderTopbarStats();
+    renderDataPane();
+    renderMockHandlers();
+    renderFaultSwitches();
+    renderTakeoverToggles();
+    renderLocaleToggle();
+  }
+  // ------------------------------------------------------------------
+  // 启动:装载应用 + 接入 mock-host
+  // ------------------------------------------------------------------
+  function startApp(url, rawParam) {
+    document.getElementById('app-url-text').textContent = rawParam || url;
+    var iframe = document.getElementById('app-iframe');
+    document.getElementById('gate').hidden = true;
+    document.getElementById('app-shell').hidden = false;
+
+    function forceReloadIframe() {
+      var sep = url.indexOf('?') >= 0 ? '&' : '?';
+      iframe.src = url + sep + '_t=' + Date.now();
+    }
+
+    // 连接灯真实语义:sdk.js 从不主动发桥协议的 sys.ping(该方法存在,但应用侧代码里
+    // 没有任何调用点——不是"应用来连接一次"的真实信号)。host.ping() 才是 mock-host.js
+    // 实际提供的连接信号补充 API,真实可用的触发点是 iframe 每次"实际完成一次新装载":
+    // 首次进入、点「重载应用」、「模拟崩溃」触发的重载,三者都会让浏览器对 iframe 派发
+    // 'load' 事件——在这里统一挂一次监听即覆盖三种场景,不需要在各按钮回调里分别调用。
+    // (曾经的实现只在 attach() 后立即调用一次 host.ping():iframe 还没开始装载就先亮灯,
+    // 且「模拟崩溃」重载后连接灯会永久熄灭——host.crash() 会把 connected 复位为 false,
+    // 但旧写法没有任何后续途径把它重新置回 true。)
+    iframe.addEventListener('load', function () {
+      if (host && typeof host.ping === 'function') {
+        host.ping();
+        // 「成功装载」的登记时机——iframe load 之后连接灯确实亮了(ping() 内部
+        // 同步把 connected 置 true 再广播 onState,此时 latestState 已是最新值)才写入
+        // 「最近使用」;host 不可用等失败路径不会走到这里,不会污染最近使用列表。
+        if (latestState && latestState.connected) recordRecentApp(rawParam);
+      }
+    });
+    iframe.src = url;
+
+    document.getElementById('btn-reload').addEventListener('click', forceReloadIframe);
+    document.getElementById('btn-crash').addEventListener('click', function () { callHost('crash'); });
+
+    // 切换应用——清掉 ?app 回引导页,复用同一套选择器 UI;有未确认回合时先提示一句。
+    document.getElementById('btn-switch-app').addEventListener('click', function () {
+      if (latestState && latestState.pendingRound) {
+        var ok = window.confirm('当前有未确认的回合,切换应用会离开这次调试会话,确定继续吗?');
+        if (!ok) return;
+      }
+      location.href = 'dev.html';
+    });
+
+    if (!window.ParanovellMockHost || typeof window.ParanovellMockHost.attach !== 'function') {
+      showToast('mock-host.js 未正确加载,控制台无法工作(壳页面结构仍可自查)');
+      return;
+    }
+
+    var appKey = 'app-' + djb2(url);
+    var detectiveFixture = new URLSearchParams(location.search).get('fixture') === 'detective';
+    if (detectiveFixture) appKey += '-detective-fixture';
+    var openingFixture = new URLSearchParams(location.search).get('fixture') === 'opening';
+    if (openingFixture) appKey += '-opening-prologue-v2';
+
+    // ------------------------------------------------------------------
+    // 预览尺寸 Web/手机 两档,按 appKey 维度持久化(与 mock-host.js per-app
+    // localStorage 同一前缀风格,但这是 dev.html 自己的纯 UI 偏好,不进 mock-host
+    // 引擎状态)。手机档装不下预览栏时按容器实测尺寸等比缩放,窗口 resize 时重算。
+    // ------------------------------------------------------------------
+    (function setupPreviewSize() {
+      var previewBody = document.getElementById('preview-body');
+      var previewViewport = document.getElementById('preview-viewport');
+      var btnWeb = document.getElementById('preview-mode-web');
+      var btnPhone = document.getElementById('preview-mode-phone');
+      var storageKey = 'paranovell-dev:' + appKey + ':preview-mode';
+      var PHONE_W = 390, PHONE_H = 844;
+
+      function loadMode() {
+        try {
+          return window.localStorage.getItem(storageKey) === 'phone' ? 'phone' : 'web';
+        } catch (e) { return 'web'; } // 隐私模式等场景 localStorage 不可用,退化为默认 Web
+      }
+      function saveMode(mode) {
+        try { window.localStorage.setItem(storageKey, mode); } catch (e) { /* 持久化失败不影响当次使用 */ }
+      }
+      function applyScale() {
+        if (!previewViewport.classList.contains('phone')) {
+          previewViewport.style.transform = '';
+          return;
+        }
+        var rect = previewBody.getBoundingClientRect();
+        var scale = Math.min(1, rect.width / PHONE_W, rect.height / PHONE_H);
+        previewViewport.style.transform = 'scale(' + scale + ')';
+      }
+      function setMode(mode) {
+        previewViewport.classList.toggle('phone', mode === 'phone');
+        btnWeb.classList.toggle('on', mode === 'web');
+        btnPhone.classList.toggle('on', mode === 'phone');
+        applyScale();
+        saveMode(mode);
+      }
+      btnWeb.addEventListener('click', function () { setMode('web'); });
+      btnPhone.addEventListener('click', function () { setMode('phone'); });
+      window.addEventListener('resize', applyScale);
+      setMode(loadMode());
+    })();
+
+    host = window.ParanovellMockHost.attach({
+      appKey: appKey,
+      postToApp: function (text) {
+        if (iframe.contentWindow) iframe.contentWindow.postMessage(text, location.origin);
+      },
+      onFromApp: function (handler) {
+        window.addEventListener('message', function (evt) {
+          if (evt.source !== iframe.contentWindow) return;
+          handler(evt.data);
+        });
+      },
+      requestReload: function () { forceReloadIframe(); },
+    });
+
+    if (typeof window.installDetectiveFixture === 'function') {
+      if (detectiveFixture) window.installDetectiveFixture(host);
+      if (openingFixture) window.installDetectiveFixture(host, true);
+    } else if (detectiveFixture || openingFixture) {
+      console.warn('[dev] fixture script not loaded; ignoring ?fixture=');
+    }
+
+    if (typeof host.onLog === 'function') host.onLog(handleLog);
+    if (typeof host.onPending === 'function') host.onPending(handlePending);
+    if (typeof host.onState === 'function') host.onState(handleState);
+    // 注:不在这里立即调用 host.ping()——真实连接信号交给上面的 iframe 'load' 监听器,
+    // 该监听器在 attach() 之前就已注册,首次装载同样会触发它,不会漏掉初始连接态。
+  }
+
+  // ------------------------------------------------------------------
+  // 入口:解析 ?app
+  // ------------------------------------------------------------------
+  // 挂载路径(/__sandbox-dev/mounted/...)在服务器重启后会失效——「最近使用」
+  // 里的挂载条目此时再点进来,装载会 404。同源校验(resolveAppUrl)本身识别不了这个,
+  // 复用现有 gate 错误展示路径(showGate),失效检测就用一次装载失败信号(HEAD 探测该
+  // 挂载 URL)做,不额外造一套失效标记/清理机制。
+  var MOUNTED_URL_PREFIX = '/__sandbox-dev/mounted/';
+  function isMountedAppUrl(url) {
+    try {
+      return new URL(url, location.href).pathname.indexOf(MOUNTED_URL_PREFIX) === 0;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  var appParam = new URLSearchParams(location.search).get('app');
+  if (!appParam) {
+    showGate('还没有指定要调试的应用。填写应用 HTML 的相对路径(同源)后装载。', '');
+  } else {
+    var resolved = resolveAppUrl(appParam);
+    if (resolved.error) {
+      showGate(resolved.error, appParam);
+    } else if (isMountedAppUrl(resolved.url)) {
+      fetch(resolved.url, { method: 'HEAD', cache: 'no-store' })
+        .then(function (resp) {
+          if (!resp.ok) throw new Error('mount http ' + resp.status);
+          startApp(resolved.url, appParam);
+        })
+        .catch(function () {
+          showGate('该条目来自已失效的临时挂载,请重新浏览选择。', '');
+        });
+    } else {
+      startApp(resolved.url, appParam);
+    }
+  }
+})();
+</script>
+</body>
+</html>

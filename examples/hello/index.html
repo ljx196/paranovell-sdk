@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hello paranovell</title>
+</head>
+<body>
+  <p id="count">Loading...</p>
+  <button id="inc">+1 and save</button>
+  <button id="ask">Ask the AI for a name</button>
+  <p id="name"></p>
+
+  <!-- 必须是这个文件名、这个相对路径;不要加 type="module" / defer / async -->
+  <!-- Keep this exact file name and relative path; no type="module" / defer / async. -->
+  <script src="sdk.js"></script>
+  <script>
+    // 1. 在 ready() 之前声明回合:期望模型回什么形状,收到后怎么写数据
+    //    Declare rounds BEFORE ready(): the expected reply shape and how to write it into data.
+    var askName = paranovell.defineRound('ask-name', {
+      format: { name: '', reason: '' },
+      notes: 'Give the hero a two-syllable name and one sentence explaining why.',
+      handler: function (output) {
+        // 回合写入会随确认一起存档 / round writes are archived together with the confirmation
+        paranovell.data.set('heroName', nameOf(output));
+      }
+    });
+
+    // 2. 等数据就绪再读写 / Read and write only after the data is ready.
+    paranovell.ready().then(function () {
+      var count = paranovell.data.get('count') || 0;
+      render(count);
+
+      document.getElementById('inc').onclick = function () {
+        count += 1;
+        paranovell.data.set('count', count);
+        paranovell.save(); // 3 秒窗口内合并上行 / coalesced within a 3s window
+        render(count);
+      };
+      document.getElementById('ask').onclick = function () {
+        askName({ input: 'The hero is a young swordsman' }).then(function (res) {
+          document.getElementById('name').textContent = nameOf(res.output) + ' - ' + ((res.output && res.output.reason) || '');
+          render(count);
+        });
+      };
+    });
+
+    // 调试台的 echo 模式把 input 原样当作回复(此时 output 是字符串),这里做兼容,保证怎么调都能跑通。
+    // The dev console's echo mode returns the input as the reply (a string); stay tolerant so it runs in every mode.
+    function nameOf(output) {
+      return (output && output.name) || 'Nameless';
+    }
+
+    function render(n) {
+      document.getElementById('count').textContent =
+        'Saved count: ' + n + ' (' + (paranovell.data.get('heroName') || 'no name yet') + ')';
+    }
+  </script>
+</body>
+</html>
