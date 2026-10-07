@@ -319,7 +319,7 @@ The response body is always `{ "code": <error code>, "message": "..." }`.
 | 5404 | 400 | More than 1000 files (directory entries and system junk files are not counted) | Merge small files |
 | 5406 | 400 | No `paranovell.json` at the package root; or the manifest is not valid JSON, `appName` exceeds 100 characters, `entry` is not `.html` or points to a missing file, `canvases` exceeds 64 KB or has invalid values | Add `{}` if the file is missing; otherwise fix the fields per sections 3 and 7 |
 | 5409 | 403 | You are not the author of this app | Use the original author account, or upload as a new app |
-| 5410 | 409 | The same idempotency key was used with different upload parameters, or you already have an upload being validated | Use a new idempotency key, or retry once the current upload finishes |
+| 5410 | 409 | The same idempotency key was used with different upload parameters, you already have another package being validated, or this upload was cancelled | Retry after the current validation finishes (or cancel it first); use a new idempotency key if you changed the package; start a new upload if it was cancelled |
 | 5439 | 409 | The app already has 7 non-deleted versions | Delete an unused old version in version management, then upload |
 
 In addition, a missing `package` file, a `title` / `synopsis` / `cover_url` that is not valid UTF-8, a missing title / cover / synopsis when publishing, or a tag count outside 1 to 5 are rejected with a generic 400; fix the form according to the message.

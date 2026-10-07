@@ -138,6 +138,20 @@ function hasFlag(argv, flag) {
 
 // 路径规范化 + 目录穿越防护:请求路径必须落在 /sandbox-sdk/ 前缀下,且解析后仍在静态根
 // 目录内(例如 `/sandbox-sdk/../../etc/passwd`),否则一律拒绝。
+// pathname 在 sandbox-sdk 根下的首段是否为 versions(不分大小写)。
+// 应用自己的 myapp/versions/sdk.js 不算,仍走 sdk.js 兜底。
+function isUnderVersionsRoot(pathname) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch (e) {
+    return false;
+  }
+  if (decoded.indexOf(URL_PREFIX) !== 0) return false;
+  const first = decoded.slice(URL_PREFIX.length).split('/')[0];
+  return first.toLowerCase() === 'versions';
+}
+
 function resolveSafePath(urlPath) {
   let decoded;
   try {
@@ -538,7 +552,7 @@ function handleRequest(req, res) {
   if (
     path.basename(filePath) === 'sdk.js' &&
     !fs.existsSync(filePath) &&
-    !/\/versions\//.test(pathname) // 写错版本号应 404,不兜底
+    !isUnderVersionsRoot(pathname) // sandbox-sdk 根下首段为 versions:写错版本号应 404,不兜底
   ) {
     serveFile(req, res, CURRENT_MAJOR_SDK_JS_PATH, pathname, SANDBOX_SDK_ROOT_REAL);
     return;
@@ -593,4 +607,4 @@ if (require.main === module) {
   startServer(port, MAX_PORT_RETRIES);
 }
 
-module.exports = { scanApps, resolveSafePath, parsePort, classifySelectedPath };
+module.exports = { scanApps, resolveSafePath, isUnderVersionsRoot, parsePort, classifySelectedPath };

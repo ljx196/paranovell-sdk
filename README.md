@@ -91,6 +91,7 @@ paranovell-sdk/
       document.getElementById('ask').onclick = function () {
         askName({ input: '主角是一名少年剑客' }).then(function (res) {
           document.getElementById('name').textContent = nameOf(res.output) + ' — ' + ((res.output && res.output.reason) || '');
+          render(count);
         });
       };
     });
@@ -286,7 +287,7 @@ node dev/serve.js --no-open    # 不自动打开浏览器
 | 5404 | 文件数超过 1000 | 合并零散小文件 |
 | 5406 | 包根没有 `paranovell.json`;或清单不是合法 JSON、`appName` 超 100 字、`entry` 不是 `.html` 或指向的文件不存在、`canvases` 超 64 KB 或取值非法 | 缺文件就补一份 `{}`;写错了按上表修正字段 |
 | 5409 | 不是这个应用的作者 | 用原作者账号,或作为新应用上传 |
-| 5410 | 同一个幂等键对应了不同的上传参数,或你已有一个上传正在校验中 | 稍后重试 |
+| 5410 | 同一个幂等键对应了不同的上传参数、你已有另一个应用包正在校验中,或这次上传已被取消 | 等当前校验结束(或先取消)后重试;换了包请用新的幂等键;上传已被取消则重新发起上传 |
 | 5439 | 该应用已有 7 个版本 | 在版本管理里删掉旧版本再传 |
 
 上传成功但带**告警**的情况不会拦你,但多半意味着运行时不按预期工作:

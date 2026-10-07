@@ -52,6 +52,36 @@ function listFiles(rootDir) {
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
+// 与平台上传校验的调试台文件标记保持一致。
+const DEV_MARKERS = ['mock-host', 'paranovell-dev', '__sandbox-dev'];
+const SCRIPT_TAG_RE = /<script\b(?:"[^"]*"|'[^']*'|[^>"'])*>/gi;
+
+// 去掉 <!-- ... --> 注释;未闭合的注释吞到文末(与 HTML 解析器一致)。
+function stripHtmlComments(text) {
+  return text.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
+}
+
+// 取 <script ...> 标签的 src(支持双引号 / 单引号 / 无引号),没有则返回 null。
+function scriptSrcOf(tag) {
+  const m = /[\s"'/]src\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag);
+  if (!m) return null;
+  return m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3];
+}
+
+// 逐路径段匹配标记:小写后段以标记开头,且标记后紧跟 . - _ 或段结束(mock-hostel.js 不命中)。
+function hasDevMarkerSegment(p, markers) {
+  return String(p)
+    .split('/')
+    .some((seg) => {
+      const lower = seg.toLowerCase();
+      return markers.some((marker) => {
+        if (!lower.startsWith(marker)) return false;
+        const rest = lower.slice(marker.length);
+        return rest === '' || rest[0] === '.' || rest[0] === '-' || rest[0] === '_';
+      });
+    });
+}
+
 function detectLatestSdkMajor() {
   const majors = fs
     .readdirSync(VERSIONS_DIR, { withFileTypes: true })
@@ -118,10 +148,12 @@ function buildPackage(appDir, opts) {
     if (!TEXT_EXT.test(name)) continue;
     const text = buf.toString('utf8');
     if (/\.html$/i.test(name)) {
-      // 只检查 <script src> 的引用(对齐 BFF normalize.go 的判定),不扫注释 / 正文
-      (text.match(/<script\b[^>]*>/gi) || []).forEach((tag) => {
-        const m = /\bsrc\s*=\s*["']([^"']+)["']/i.exec(tag);
-        if (m && /mock-host|paranovell-dev|__sandbox-dev/.test(m[1].split(/[?#]/)[0])) {
+      // 只检查 <script src> 的引用:先剥掉 HTML 注释,再按平台上传校验的口径判定
+      // (小写 + 逐路径段匹配,见 hasDevMarkerSegment),不扫注释 / 正文
+      (stripHtmlComments(text).match(SCRIPT_TAG_RE) || []).forEach((tag) => {
+        const src = scriptSrcOf(tag);
+        const m = src === null ? null : [tag, src];
+        if (m && hasDevMarkerSegment(m[1].split(/[?#]/)[0], DEV_MARKERS)) {
           errors.push(name + ' 引用了调试台文件(' + m[1] + '),平台会拒收');
         }
         if (!m || !/(^|\/)sdk\.js$/.test(m[1])) return;
@@ -300,4 +332,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { buildPackage, buildZip };
+module.exports = { buildPackage, buildZip, hasDevMarkerSegment, stripHtmlComments, scriptSrcOf };

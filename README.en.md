@@ -91,6 +91,7 @@ paranovell-sdk/
       document.getElementById('ask').onclick = function () {
         askName({ input: 'The hero is a young swordsman' }).then(function (res) {
           document.getElementById('name').textContent = nameOf(res.output) + ' - ' + ((res.output && res.output.reason) || '');
+          render(count);
         });
       };
     });
@@ -286,7 +287,7 @@ The response body is always `{ "code": <error code>, "message": "..." }`.
 | 5404 | More than 1000 files | Merge small files |
 | 5406 | No `paranovell.json` at the package root; or the manifest is not valid JSON, `appName` exceeds 100 characters, `entry` is not `.html` or points to a missing file, `canvases` exceeds 64 KB or has invalid values | Add `{}` if the file is missing; otherwise fix the fields as listed above |
 | 5409 | You are not the author of this app | Use the original author account, or upload as a new app |
-| 5410 | The same idempotency key was used with different upload parameters, or you already have an upload being validated | Retry later |
+| 5410 | The same idempotency key was used with different upload parameters, you already have another package being validated, or this upload was cancelled | Retry after the current validation finishes (or cancel it first); use a new idempotency key if you changed the package; start a new upload if it was cancelled |
 | 5439 | The app already has 7 versions | Delete an old version in version management, then upload |
 
 Uploads that succeed with **warnings** are not blocked, but they usually mean the app will not behave as expected at runtime:
