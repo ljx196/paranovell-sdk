@@ -96,7 +96,7 @@ function buildPackage(appDir, opts) {
     if (manifest.canvases !== undefined && Buffer.byteLength(JSON.stringify(manifest.canvases)) > MAX_CANVASES_BYTES) {
       errors.push('canvases 声明超过 64 KB');
     }
-    if (manifest.entry !== undefined && !/\.html?$/i.test(String(manifest.entry))) {
+    if (manifest.entry !== undefined && !/\.html$/i.test(String(manifest.entry))) {
       errors.push('entry 必须指向一个 .html 文件:' + manifest.entry);
     }
   }
@@ -117,12 +117,13 @@ function buildPackage(appDir, opts) {
   for (const [name, buf] of files) {
     if (!TEXT_EXT.test(name)) continue;
     const text = buf.toString('utf8');
-    if (/\.html?$/i.test(name)) {
-      if (/mock-host|paranovell-dev|__sandbox-dev/.test(text)) {
-        errors.push(name + ' 引用了调试台文件(mock-host / paranovell-dev),平台会拒收');
-      }
+    if (/\.html$/i.test(name)) {
+      // 只检查 <script src> 的引用(对齐 BFF normalize.go 的判定),不扫注释 / 正文
       (text.match(/<script\b[^>]*>/gi) || []).forEach((tag) => {
         const m = /\bsrc\s*=\s*["']([^"']+)["']/i.exec(tag);
+        if (m && /mock-host|paranovell-dev|__sandbox-dev/.test(m[1].split(/[?#]/)[0])) {
+          errors.push(name + ' 引用了调试台文件(' + m[1] + '),平台会拒收');
+        }
         if (!m || !/(^|\/)sdk\.js$/.test(m[1])) return;
         if (m[1] !== 'sdk.js' && m[1] !== './sdk.js') {
           warnings.push(name + ':SDK 引用 ' + m[1] + ' 不在包根 sdk.js,上传后可能找不到 SDK');

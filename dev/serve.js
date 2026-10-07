@@ -535,7 +535,11 @@ function handleRequest(req, res) {
   }
   // 应用目录里没有自带 sdk.js 时(平台上传后同样由平台在包根注入),`<script src="sdk.js">`
   // 兜底成当前大版本的 sdk.js,开发时不必手工复制。
-  if (path.basename(filePath) === 'sdk.js' && !fs.existsSync(filePath)) {
+  if (
+    path.basename(filePath) === 'sdk.js' &&
+    !fs.existsSync(filePath) &&
+    !/\/versions\//.test(pathname) // 写错版本号应 404,不兜底
+  ) {
     serveFile(req, res, CURRENT_MAJOR_SDK_JS_PATH, pathname, SANDBOX_SDK_ROOT_REAL);
     return;
   }

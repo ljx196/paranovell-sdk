@@ -1,6 +1,5 @@
 {
   "name": "paranovell-sdk",
-  "version": "1.0.0",
   "private": true,
   "description": "paranovell sandbox app SDK: runtime, type declarations, local dev console and packer.",
   "license": "MIT",

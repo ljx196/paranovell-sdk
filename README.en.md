@@ -142,7 +142,7 @@ The full signatures and comments live in [`versions/v1/paranovell.d.ts`](version
 
 | Method | Description |
 |---|---|
-| `ready(): Promise<void>` | Pulls the data; read and write only after it resolves. Repeated calls return the same Promise. If the previous round is unfinished it does not block: the platform recovers it in the background and automatically replays your registered `defineRound` handler of the same name |
+| `ready(): Promise<void>` | Pulls the data; read and write only after it resolves. Repeated calls return the same Promise. With a local cache it does not block: the platform recovers the previous round in the background and automatically replays your registered `defineRound` handler of the same name. On a new device or after clearing the cache (no usable local data), it waits until the story text finishes generating before resolving with data; use `onRoundPending` to show a generating state meanwhile |
 | `env.platform` | `'web'` (iframe) or `'native'` (in-app WebView), read-only |
 | `env.appId` | Current app id, read-only |
 

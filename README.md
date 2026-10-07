@@ -142,7 +142,7 @@ paranovell-sdk/
 
 | 方法 | 说明 |
 |---|---|
-| `ready(): Promise<void>` | 拉取数据,就绪后再读写。重复调用返回同一个 Promise。若上一轮回合未完成,不阻塞:平台在后台接回,并自动重放你注册的同名 `defineRound` handler |
+| `ready(): Promise<void>` | 拉取数据,就绪后再读写。重复调用返回同一个 Promise。本地有缓存时不阻塞:平台在后台接回上一轮回合,并自动重放你注册的同名 `defineRound` handler;换设备 / 清过缓存(本地没有可用数据)时,会等正文生成完才带数据返回,期间可用 `onRoundPending` 显示“生成中” |
 | `env.platform` | `'web'`(iframe)或 `'native'`(App 内 WebView),只读 |
 | `env.appId` | 当前应用 id,只读 |
 
